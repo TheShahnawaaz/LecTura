@@ -7,10 +7,18 @@
     "distDir": "../dist"
   },
   "package": {
-    "productName": "tauri-app",
+    "productName": "LecTura",
     "version": "0.1.0"
   },
   "tauri": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/TheShahnawaaz/LecTura/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IFJVU1c5K095QW15SnJzUG5XSkxldmNURzVvVUNXQytPUE04dm5IUlhCbmZ6UWFkbVJ1NGk3dEtsCg==",
+      "dialog": true
+    },
     "allowlist": {
       "all": false,
       "shell": {
@@ -20,9 +28,9 @@
     },
     "windows": [
       {
-        "title": "tauri-app",
-        "width": 800,
-        "height": 600
+        "title": "LecTura",
+        "width": 1200,
+        "height": 800
       }
     ],
     "security": {
