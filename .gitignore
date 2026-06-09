@@ -1,0 +1,65 @@
+# Dependencies
+node_modules/
+/dist
+/dist-ssr
+/out
+
+# Logs & Temp Files
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+.eslintcache
+.stylelintcache
+
+# Environment Secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env.local
+
+# SQLite Database files (local testing database files)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+*.db3
+*.sqlite3
+db.json
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Windows system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editor / IDE configuration directories
+.vscode/
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swo
+
+# Rust / Cargo output (for Tauri backend)
+/src-tauri/target/
+/src-tauri/gen/schemas
+
+# Tauri sidecar binary files (do not commit platform-specific heavy executables)
+/src-tauri/bin/yt-dlp*
+/src-tauri/bin/ffmpeg*
+/src-tauri/bin/ffprobe*
