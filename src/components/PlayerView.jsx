@@ -127,9 +127,9 @@ export function PlayerView({
     }
 
     return () => {
-      if (player && typeof player.destroy === "function") {
-        player.destroy();
-      }
+      // Note: We do NOT call player.destroy() here because the YouTube API's destroy() method
+      // physically deletes the <iframe> element from the DOM, breaking React's virtual DOM reconciliation.
+      // The browser naturally cleans up the iframe context on unmount.
       ytPlayerRef.current = null;
     };
   }, [isOffline, activeVideo, isFullscreen]);
@@ -411,6 +411,7 @@ export function PlayerView({
         />
       ) : (
         <iframe
+          key={activeVideo.id}
           ref={iframeRef}
           src={`https://www.youtube.com/embed/${activeVideo.id}?enablejsapi=1${startParam}`}
           title={activeVideo.title}

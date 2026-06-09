@@ -152,6 +152,7 @@ function App() {
 
     // Listen to download progress events from Rust downloader
     const unlistenProgress = listen("download-progress", (event) => {
+      if (!event || !event.payload) return;
       const payload = event.payload;
       setVideos((prevVideos) =>
         prevVideos.map((v) => {
@@ -186,13 +187,14 @@ function App() {
 
     // Listen to FFmpeg config status changes
     const unlistenFfmpeg = listen("ffmpeg-download-status", (event) => {
+      if (!event || event.payload === undefined) return;
       const status = event.payload;
       if (status === "downloading") {
         setFfmpegStatusText("Downloading FFmpeg package from server...");
       } else if (status === "success") {
         setFfmpegStatusText("FFmpeg setup completed successfully!");
         setFfmpegReady(true);
-      } else if (status.startsWith("failed")) {
+      } else if (status && typeof status === "string" && status.startsWith("failed")) {
         setFfmpegStatusText(`Setup failed: ${status}`);
         setFfmpegReady(false);
       }
