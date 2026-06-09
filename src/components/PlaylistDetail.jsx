@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { PlayerView } from "./PlayerView";
 import { Download, CheckCircle2, Loader2, FileVideo, X, Play, Copy, ExternalLink, Circle } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
@@ -20,6 +20,18 @@ export function PlaylistDetail({
   handleCancelVideoDownload,
   handleCancelPlaylistDownload,
 }) {
+  const activeVideoRef = useRef(null);
+
+  useEffect(() => {
+    // Scroll active video card into view when activeVideo.id changes
+    if (activeVideoRef.current) {
+      activeVideoRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
+    }
+  }, [activeVideo?.id]);
+
   const formatTime = (secs) => {
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
@@ -184,6 +196,7 @@ export function PlaylistDetail({
               return (
                 <div
                   key={video.id}
+                  ref={isSelected ? activeVideoRef : null}
                   onClick={() => handleSelectVideo(video)}
                   onContextMenu={(e) => handleVideoContextMenu(e, video)}
                   className={`group p-2.5 rounded-lg cursor-pointer flex flex-col gap-2 border transition duration-150 ease-out select-none ${
