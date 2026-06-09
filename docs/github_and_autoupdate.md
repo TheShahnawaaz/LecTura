@@ -44,14 +44,19 @@ Tauri v1 contains a built-in auto-updater. Rather than running a dedicated web s
 To prevent attackers from uploading malicious binaries to your repository and forcing updates on your users, Tauri requires all updater packages to be signed with **Minisign** private/public key pairs.
 
 ### Current Key Pair Setup:
-A key pair was successfully generated during project configuration:
+A key pair was successfully generated and saved:
 1. **Public Key**: Confirmed and added to [tauri.conf.json](file:///Users/shahnawaz/Desktop/Projects/Playground/LecTura/src-tauri/tauri.conf.json):
    `dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFCRjEwODg0MzZDQzkyMTcKUldRWGtzdzJoQWp4cXhUb1ZuVExVY01VSklDbWxsekt6aUVnZzVZMHNEMVc1NmlkYWFYdU52WGwK`
-2. **Private Key**: Encrypted key block generated. Must be added to your GitHub Repository Secrets as `TAURI_PRIVATE_KEY`.
-3. **Private Key Password**: The password used to encrypt the private key. Must be added to your GitHub Repository Secrets as `TAURI_KEY_PASSWORD`.
+2. **Private Key (GitHub Secrets)**: Encrypted key block generated. Add it to your GitHub Repository Secrets as `TAURI_PRIVATE_KEY`.
+3. **Private Key Password (GitHub Secrets)**: The password used to encrypt the private key. Add it to your GitHub Repository Secrets as `TAURI_KEY_PASSWORD`.
+
+Additionally, the keys are saved locally on this machine for local compilation:
+* **Private Key Path**: `/Users/shahnawaz/.tauri/lectura.key` (or `~/.tauri/lectura.key`)
+* **Public Key Path**: `/Users/shahnawaz/.tauri/lectura.key.pub` (or `~/.tauri/lectura.key.pub`)
 
 > [!NOTE]
 > The GitHub Actions workflow is configured to accept both `TAURI_PRIVATE_KEY`/`TAURI_KEY_PASSWORD` and `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` format styles for cross-compatibility.
+
 
 
 ---
