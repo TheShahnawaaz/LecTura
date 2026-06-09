@@ -8,7 +8,7 @@
   },
   "package": {
     "productName": "LecTura",
-    "version": "0.1.0"
+    "version": "../package.json"
   },
   "tauri": {
     "updater": {
@@ -23,11 +23,11 @@
       "all": false,
       "fs": {
         "all": true,
-        "scope": ["$APPDIR/*", "$APPDATA/*"]
+        "scope": ["$APPDIR/**", "$APPDATA/**"]
       },
       "protocol": {
         "asset": true,
-        "assetScope": ["$APPDIR/*", "$APPDATA/*"]
+        "assetScope": ["$APPDIR/**", "$APPDATA/**"]
       },
       "shell": {
         "all": false,

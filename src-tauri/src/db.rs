@@ -50,6 +50,10 @@ const MIGRATIONS: &[&str] = &[
         FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
     );
     "#,
+    // Version 2: Drop the legacy notes table if it exists
+    r#"
+    DROP TABLE IF EXISTS notes;
+    "#,
 ];
 
 pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> {

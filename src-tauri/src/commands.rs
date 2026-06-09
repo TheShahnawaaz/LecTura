@@ -1,8 +1,15 @@
 use tauri::{State, Manager};
 use crate::db::DbPool;
 use serde::{Serialize, Deserialize};
-use tauri::api::process::{Command, CommandEvent};
+use tauri::api::process::{Command, CommandEvent, CommandChild};
 use std::fs::File;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+
+pub struct ActiveDownloads {
+    pub map: Mutex<HashMap<String, CommandChild>>,
+    pub active_playlists: Mutex<HashSet<String>>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Folder {
@@ -293,6 +300,14 @@ fn check_ytdlp_ready() -> bool {
     }
 }
 
+fn is_ffmpeg_in_path() -> bool {
+    std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 fn check_ffmpeg_ready(app_handle: &tauri::AppHandle) -> bool {
     if let Some(mut path) = app_handle.path_resolver().app_data_dir() {
         #[cfg(target_os = "windows")]
@@ -300,10 +315,11 @@ fn check_ffmpeg_ready(app_handle: &tauri::AppHandle) -> bool {
         #[cfg(not(target_os = "windows"))]
         path.push("ffmpeg");
         
-        path.exists()
-    } else {
-        false
+        if path.exists() {
+            return true;
+        }
     }
+    is_ffmpeg_in_path()
 }
 
 #[tauri::command]
@@ -413,6 +429,7 @@ async fn download_video_inner(
     video_id: String, 
     url: String
 ) -> Result<(), String> {
+    let active_downloads = app_handle.state::<ActiveDownloads>();
     let app_dir = app_handle.path_resolver().app_data_dir().ok_or("No app data directory")?;
     let downloads_dir = app_dir.join("downloads");
     if !downloads_dir.exists() {
@@ -420,8 +437,28 @@ async fn download_video_inner(
     }
     
     let output_path = downloads_dir.join(format!("{}.mp4", video_id));
-    let ffmpeg_location = app_dir.to_str().ok_or("Invalid path")?;
     
+    let mut ffmpeg_location_path = app_dir.clone();
+    #[cfg(target_os = "windows")]
+    ffmpeg_location_path.push("ffmpeg.exe");
+    #[cfg(not(target_os = "windows"))]
+    ffmpeg_location_path.push("ffmpeg");
+
+    let mut args = vec![
+        "-f".to_string(), 
+        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best".to_string(),
+    ];
+
+    if ffmpeg_location_path.exists() {
+        let ffmpeg_location = app_dir.to_str().ok_or("Invalid path")?;
+        args.push("--ffmpeg-location".to_string());
+        args.push(ffmpeg_location.to_string());
+    }
+
+    args.push("-o".to_string());
+    args.push(output_path.to_str().ok_or("Invalid output path")?.to_string());
+    args.push(url);
+
     {
         let conn = pool.get().map_err(|e| e.to_string())?;
         conn.execute(
@@ -436,16 +473,17 @@ async fn download_video_inner(
         "status": "downloading"
     }));
     
-    let (mut rx, mut _child) = Command::new_sidecar("yt-dlp")
+    let (mut rx, child) = Command::new_sidecar("yt-dlp")
         .map_err(|e| format!("Failed to resolve sidecar: {}", e))?
-        .args([
-            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "--ffmpeg-location", ffmpeg_location,
-            "-o", output_path.to_str().ok_or("Invalid output path")?,
-            &url
-        ])
+        .args(args)
         .spawn()
         .map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
+    
+    // Insert active download process child handle
+    {
+        let mut map = active_downloads.map.lock().unwrap();
+        map.insert(video_id.clone(), child);
+    }
     
     let mut success = false;
     
@@ -475,6 +513,12 @@ async fn download_video_inner(
             }
             _ => {}
         }
+    }
+    
+    // Remove process from active downloads map
+    {
+        let mut map = active_downloads.map.lock().unwrap();
+        map.remove(&video_id);
     }
     
     if success {
@@ -511,7 +555,12 @@ async fn download_video_inner(
 }
 
 #[tauri::command]
-pub fn download_playlist(app_handle: tauri::AppHandle, pool: State<'_, DbPool>, playlist_id: String) -> Result<(), String> {
+pub fn download_playlist(
+    app_handle: tauri::AppHandle, 
+    pool: State<'_, DbPool>, 
+    active_downloads: State<'_, ActiveDownloads>,
+    playlist_id: String
+) -> Result<(), String> {
     let pool_clone = pool.inner().clone();
     
     let conn = pool_clone.get().map_err(|e| e.to_string())?;
@@ -528,11 +577,132 @@ pub fn download_playlist(app_handle: tauri::AppHandle, pool: State<'_, DbPool>, 
         }
     }
     
+    // Mark playlist as active
+    {
+        let mut active = active_downloads.active_playlists.lock().unwrap();
+        active.insert(playlist_id.clone());
+    }
+    
+    let playlist_id_clone = playlist_id.clone();
+    let app_handle_clone = app_handle.clone();
     tauri::async_runtime::spawn(async move {
+        let active_downloads_state = app_handle_clone.state::<ActiveDownloads>();
         for (video_id, url) in videos_to_download {
-            let _ = download_video_inner(app_handle.clone(), pool_clone.clone(), video_id, url).await;
+            // Check if playlist download has been cancelled
+            {
+                let active = active_downloads_state.active_playlists.lock().unwrap();
+                if !active.contains(&playlist_id_clone) {
+                    break;
+                }
+            }
+            let _ = download_video_inner(app_handle_clone.clone(), pool_clone.clone(), video_id, url).await;
+        }
+        
+        // Remove from active playlists when done
+        {
+            let mut active = active_downloads_state.active_playlists.lock().unwrap();
+            active.remove(&playlist_id_clone);
         }
     });
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn download_video(
+    app_handle: tauri::AppHandle, 
+    pool: State<'_, DbPool>, 
+    _active_downloads: State<'_, ActiveDownloads>,
+    video_id: String
+) -> Result<(), String> {
+    let pool_clone = pool.inner().clone();
+    
+    let conn = pool_clone.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT url FROM videos WHERE id = ?1").map_err(|e| e.to_string())?;
+    let url: String = stmt.query_row([&video_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+    
+    tauri::async_runtime::spawn(async move {
+        let _ = download_video_inner(app_handle, pool_clone, video_id, url).await;
+    });
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_download(
+    app_handle: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    active_downloads: State<'_, ActiveDownloads>,
+    video_id: String,
+) -> Result<(), String> {
+    // 1. Terminate the child process if running
+    {
+        let mut map = active_downloads.map.lock().unwrap();
+        if let Some(child) = map.remove(&video_id) {
+            let _ = child.kill();
+        }
+    }
+    
+    // 2. Reset database state
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE videos SET download_status = 'none', download_progress = 0 WHERE id = ?1",
+        [&video_id],
+    ).map_err(|e| e.to_string())?;
+    
+    // 3. Emit progress event
+    let _ = app_handle.emit_all("download-progress", serde_json::json!({
+        "video_id": video_id,
+        "progress": 0,
+        "status": "none"
+    }));
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_playlist_download(
+    app_handle: tauri::AppHandle,
+    pool: State<'_, DbPool>,
+    active_downloads: State<'_, ActiveDownloads>,
+    playlist_id: String,
+) -> Result<(), String> {
+    // 1. Cancel the sequential playlist loop
+    {
+        let mut active = active_downloads.active_playlists.lock().unwrap();
+        active.remove(&playlist_id);
+    }
+    
+    // 2. Find all videos in this playlist
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id FROM videos WHERE playlist_id = ?1").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&playlist_id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    
+    let mut video_ids = Vec::new();
+    for row in rows {
+        video_ids.push(row.map_err(|e| e.to_string())?);
+    }
+    
+    // 3. Kill active child processes and reset DB state for all videos
+    {
+        let mut map = active_downloads.map.lock().unwrap();
+        for video_id in video_ids {
+            if let Some(child) = map.remove(&video_id) {
+                let _ = child.kill();
+            }
+            
+            let _ = conn.execute(
+                "UPDATE videos SET download_status = 'none', download_progress = 0 WHERE id = ?1 AND download_status IN ('downloading', 'pending')",
+                [&video_id],
+            );
+            
+            let _ = app_handle.emit_all("download-progress", serde_json::json!({
+                "video_id": video_id,
+                "progress": 0,
+                "status": "none"
+            }));
+        }
+    }
     
     Ok(())
 }

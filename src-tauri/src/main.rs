@@ -21,6 +21,12 @@ fn main() {
             let pool = db::init_db(app_dir)?;
             app.manage(pool);
             
+            let active_downloads = commands::ActiveDownloads {
+                map: std::sync::Mutex::new(std::collections::HashMap::new()),
+                active_playlists: std::sync::Mutex::new(std::collections::HashSet::new()),
+            };
+            app.manage(active_downloads);
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -39,6 +45,9 @@ fn main() {
             commands::get_system_status,
             commands::download_ffmpeg,
             commands::download_playlist,
+            commands::download_video,
+            commands::cancel_download,
+            commands::cancel_playlist_download,
             commands::import_playlist,
         ])
         .run(tauri::generate_context!())
