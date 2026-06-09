@@ -100,6 +100,15 @@ function App() {
   // Playback Speed State
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
 
+  // Playback Speed Retention Preference
+  const [rememberSpeed, setRememberSpeed] = useState(() => {
+    return localStorage.getItem("lectura_remember_speed") === "true";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("lectura_remember_speed", rememberSpeed);
+  }, [rememberSpeed]);
+
   // Player ref for HTML5 video playback controls
   const videoPlayerRef = useRef(null);
 
@@ -612,7 +621,9 @@ function App() {
 
   const handleSelectVideo = (video) => {
     setActiveVideo(video);
-    setPlaybackSpeed(1.0);
+    if (!rememberSpeed) {
+      setPlaybackSpeed(1.0);
+    }
   };
 
   const handleUpdateProgress = async (videoId, seconds, isCompleted) => {
@@ -998,6 +1009,24 @@ function App() {
                 >
                   {ffmpegReady ? "Configured" : "Missing"}
                 </Badge>
+              </div>
+
+              {/* Remember Playback Speed setting */}
+              <div className="p-3 bg-muted/30 rounded-lg border border-border flex items-center justify-between select-none">
+                <div className="min-w-0 pr-2">
+                  <h4 className="text-xs font-semibold">
+                    Remember Playback Speed
+                  </h4>
+                  <p className="text-[9px] text-muted-foreground mt-0.5">
+                    Maintain current playback speed across videos.
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={rememberSpeed}
+                  onChange={(e) => setRememberSpeed(e.target.checked)}
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary cursor-pointer accent-primary"
+                />
               </div>
             </div>
 
