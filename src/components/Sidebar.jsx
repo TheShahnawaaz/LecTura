@@ -52,7 +52,7 @@ export function Sidebar({
                   LecTura
                 </span>
                 <span className="text-[10px] text-muted-foreground font-medium truncate">
-                  Offline Player
+                  Offline Player v0.1.1
                 </span>
               </div>
             </div>
