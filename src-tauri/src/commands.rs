@@ -103,6 +103,177 @@ pub fn delete_folder(pool: State<'_, DbPool>, id: String) -> Result<(), String> 
     Ok(())
 }
 
+/// Delete a playlist AND its downloaded asset files from disk.
+/// Always removes every downloaded video file before wiping the DB rows.
+#[tauri::command]
+pub fn delete_playlist_with_assets(pool: State<'_, DbPool>, playlist_id: String) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+
+    // Collect all local paths before touching the DB
+    let local_paths: Vec<Option<String>> = {
+        let mut stmt = conn.prepare(
+            "SELECT local_path FROM videos WHERE playlist_id = ?1"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([&playlist_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    // Delete files from disk (best-effort, ignore individual errors)
+    for path_opt in &local_paths {
+        if let Some(path) = path_opt {
+            if !path.is_empty() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
+    // Delete DB rows in a transaction
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM videos WHERE playlist_id = ?1", [&playlist_id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM playlists WHERE id = ?1", [&playlist_id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Move all direct children (subfolders + playlists) to root, then delete the folder.
+#[tauri::command]
+pub fn delete_folder_move_to_root(pool: State<'_, DbPool>, folder_id: String) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // Orphan direct child folders to root
+    tx.execute(
+        "UPDATE folders SET parent_id = NULL WHERE parent_id = ?1",
+        [&folder_id],
+    ).map_err(|e| e.to_string())?;
+
+    // Orphan direct playlists to root
+    tx.execute(
+        "UPDATE playlists SET folder_id = NULL WHERE folder_id = ?1",
+        [&folder_id],
+    ).map_err(|e| e.to_string())?;
+
+    // Delete the folder itself
+    tx.execute("DELETE FROM folders WHERE id = ?1", [&folder_id])
+        .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Recursively collect all descendant folder IDs (including the root one).
+fn collect_descendant_folder_ids(conn: &rusqlite::Connection, root_id: &str) -> Result<Vec<String>, String> {
+    let mut all_ids = vec![root_id.to_string()];
+    let mut queue = vec![root_id.to_string()];
+
+    while let Some(current) = queue.pop() {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM folders WHERE parent_id = ?1"
+        ).map_err(|e| e.to_string())?;
+        let children: Vec<String> = stmt.query_map([&current], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        for child in children {
+            all_ids.push(child.clone());
+            queue.push(child);
+        }
+    }
+    Ok(all_ids)
+}
+
+/// Recursively delete a folder, all its descendant subfolders, all playlists,
+/// and all videos. Optionally also delete video asset files from disk.
+#[tauri::command]
+pub fn delete_folder_cascade(
+    pool: State<'_, DbPool>,
+    folder_id: String,
+    delete_assets: bool,
+) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+
+    // Collect all folder IDs in the subtree
+    let all_folder_ids = collect_descendant_folder_ids(&conn, &folder_id)?;
+
+    if delete_assets {
+        // Gather all local_paths for videos in these folders' playlists
+        for fid in &all_folder_ids {
+            let mut stmt = conn.prepare(
+                "SELECT v.local_path FROM videos v
+                 JOIN playlists p ON v.playlist_id = p.id
+                 WHERE p.folder_id = ?1 AND v.local_path IS NOT NULL AND v.local_path != ''"
+            ).map_err(|e| e.to_string())?;
+            let paths: Vec<String> = stmt.query_map([fid], |row| row.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            for path in paths {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    // DB deletions in a transaction
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for fid in &all_folder_ids {
+        // Delete videos for all playlists in this folder
+        tx.execute(
+            "DELETE FROM videos WHERE playlist_id IN (SELECT id FROM playlists WHERE folder_id = ?1)",
+            [fid],
+        ).map_err(|e| e.to_string())?;
+        // Delete playlists in this folder
+        tx.execute("DELETE FROM playlists WHERE folder_id = ?1", [fid])
+            .map_err(|e| e.to_string())?;
+    }
+    // Delete all the folders in reverse order (deepest first avoids FK issues)
+    for fid in all_folder_ids.iter().rev() {
+        tx.execute("DELETE FROM folders WHERE id = ?1", [fid])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn move_folder(pool: State<'_, DbPool>, folder_id: String, parent_id: Option<String>) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    
+    // Check for potential cycles if moving into a parent folder
+    if let Some(ref target_parent_id) = parent_id {
+        if target_parent_id == &folder_id {
+            return Err("Cannot move a folder inside itself.".to_string());
+        }
+        
+        // Check if target_parent_id is a descendant of folder_id
+        let descendants = collect_descendant_folder_ids(&conn, &folder_id)?;
+        if descendants.contains(target_parent_id) {
+            return Err("Cannot move a folder inside its own subfolders.".to_string());
+        }
+    }
+    
+    conn.execute(
+        "UPDATE folders SET parent_id = ?1 WHERE id = ?2",
+        (parent_id, &folder_id),
+    ).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn move_playlist(pool: State<'_, DbPool>, playlist_id: String, folder_id: Option<String>) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE playlists SET folder_id = ?1 WHERE id = ?2",
+        (folder_id, &playlist_id),
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+
 #[tauri::command]
 pub fn get_playlists(pool: State<'_, DbPool>) -> Result<Vec<Playlist>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
@@ -357,6 +528,53 @@ pub fn get_system_status(app_handle: tauri::AppHandle) -> Result<SystemStatus, S
         ytdlp_ready,
         ffmpeg_ready,
     })
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PlaylistStats {
+    pub playlist_id: String,
+    pub total_videos: i32,
+    pub completed_videos: i32,
+    pub total_duration: i32,
+    pub total_watched: i32,
+    pub downloaded_videos: i32,
+    pub completed_duration: i32,
+}
+
+#[tauri::command]
+pub fn get_library_stats(pool: State<'_, DbPool>) -> Result<Vec<PlaylistStats>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT 
+            playlist_id, 
+            COUNT(id) as total_videos, 
+            SUM(CASE WHEN is_completed = 1 THEN 1 ELSE 0 END) as completed_videos,
+            SUM(duration) as total_duration,
+            SUM(watched_progress) as total_watched,
+            SUM(CASE WHEN local_path IS NOT NULL THEN 1 ELSE 0 END) as downloaded_videos,
+            SUM(CASE WHEN is_completed = 1 THEN COALESCE(duration, 0) ELSE 0 END) as completed_duration
+         FROM videos 
+         WHERE playlist_id IS NOT NULL
+         GROUP BY playlist_id"
+    ).map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map([], |row| {
+        Ok(PlaylistStats {
+            playlist_id: row.get(0)?,
+            total_videos: row.get(1)?,
+            completed_videos: row.get(2)?,
+            total_duration: row.get(3)?,
+            total_watched: row.get(4)?,
+            downloaded_videos: row.get(5)?,
+            completed_duration: row.get(6)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(result)
 }
 
 fn perform_ffmpeg_download(app_handle: &tauri::AppHandle) -> Result<(), String> {

@@ -1,17 +1,23 @@
 import React, { useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Sliders, AlertCircle, WifiOff, Globe, Maximize, Minimize } from "lucide-react";
+import { Sliders, WifiOff, Globe, Maximize, Minimize, SkipBack, SkipForward } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
 import { Badge } from "@/components/ui/badge";
 
 export function PlayerView({
   activeVideo,
+  videos,
   videoPlayerRef,
   playbackSpeed,
   setPlaybackSpeed,
   handleUpdateProgress,
+  handleSelectVideo,
 }) {
+  // Compute adjacent lecture navigation
+  const currentIndex = videos ? videos.findIndex((v) => v.id === activeVideo.id) : -1;
+  const prevVideo = currentIndex > 0 ? videos[currentIndex - 1] : null;
+  const nextVideo = currentIndex !== -1 && currentIndex < videos.length - 1 ? videos[currentIndex + 1] : null;
   const isOffline =
     activeVideo.download_status === "completed" && activeVideo.local_path;
 
@@ -19,13 +25,27 @@ export function PlayerView({
   const iframeRef = useRef(null);
   const ytPlayerRef = useRef(null);
   const savedTimeRef = useRef(0);
+  const speedHudTimerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showSpeedHUD, setShowSpeedHUD] = useState(false);
 
   // Ref to hold the latest playback speed so that callbacks don't capture stale state
   const playbackSpeedRef = useRef(playbackSpeed);
   useEffect(() => {
     playbackSpeedRef.current = playbackSpeed;
   }, [playbackSpeed]);
+
+  // Show a transient speed HUD overlay when speed changes in fullscreen
+  useEffect(() => {
+    if (!isFullscreen) return;
+    // Flash the HUD
+    setShowSpeedHUD(true);
+    if (speedHudTimerRef.current) clearTimeout(speedHudTimerRef.current);
+    speedHudTimerRef.current = setTimeout(() => setShowSpeedHUD(false), 1500);
+    return () => {
+      if (speedHudTimerRef.current) clearTimeout(speedHudTimerRef.current);
+    };
+  }, [playbackSpeed, isFullscreen]);
 
   // Adjust playback speed bounds when switching between online and offline modes
   useEffect(() => {
@@ -140,10 +160,25 @@ export function PlayerView({
   // Keyboard Shortcuts (Space, K, Arrows, M, J, L, Numbers, F, Esc)
   useEffect(() => {
     const handleKeyDown = async (e) => {
-      // Ignore if typing in text input fields
+      // Ignore repeated keydown events from key being held down
+      if (e.repeat) return;
+
+      // Ignore if typing in text input fields or select dropdowns
       const tag = document.activeElement.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement.isContentEditable) {
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || document.activeElement.isContentEditable) {
         return;
+      }
+
+      // For spacebar: immediately prevent default to stop:
+      // 1. Page scrolling
+      // 2. Focused <button> from receiving a synthetic click on keyup
+      // 3. Native <video controls> spacebar toggle competing with our handler
+      if (e.key === " ") {
+        e.preventDefault();
+        // Also blur any focused button/element so it doesn't intercept the keyup
+        if (document.activeElement && document.activeElement !== document.body) {
+          document.activeElement.blur();
+        }
       }
 
       // Exit fullscreen on Esc key
@@ -184,12 +219,15 @@ export function PlayerView({
             break;
           case " ":
           case "k":
+            // e.preventDefault() already called above for space; call for k too
             e.preventDefault();
             if (video.paused) {
               video.play().catch(console.error);
             } else {
               video.pause();
             }
+            // Blur the video element so its native controls don't also respond
+            video.blur();
             break;
           case "arrowright":
             e.preventDefault();
@@ -218,6 +256,14 @@ export function PlayerView({
           case "m":
             e.preventDefault();
             video.muted = !video.muted;
+            break;
+          case "n":
+            e.preventDefault();
+            if (nextVideo) handleSelectVideo(nextVideo);
+            break;
+          case "p":
+            e.preventDefault();
+            if (prevVideo) handleSelectVideo(prevVideo);
             break;
           default:
             // Handle number keys 0-9 to seek to percentage (0% to 90%)
@@ -300,6 +346,14 @@ export function PlayerView({
               }
             }
             break;
+          case "n":
+            e.preventDefault();
+            if (nextVideo) handleSelectVideo(nextVideo);
+            break;
+          case "p":
+            e.preventDefault();
+            if (prevVideo) handleSelectVideo(prevVideo);
+            break;
           default:
             // Handle number keys 0-9 to seek to percentage (0% to 90%)
             if (e.key >= "0" && e.key <= "9") {
@@ -334,6 +388,7 @@ export function PlayerView({
           ref={videoPlayerRef}
           src={convertFileSrc(activeVideo.local_path)}
           controls
+          tabIndex={-1}
           className="w-full h-full object-contain focus:outline-none"
           onLoadedMetadata={(e) => {
             // Restore playback speed
@@ -376,6 +431,20 @@ export function PlayerView({
       >
         {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
       </button>
+
+      {/* Fullscreen Speed HUD — fades in/out when speed changes */}
+      {isFullscreen && (
+        <div
+          className={`absolute top-5 left-1/2 -translate-x-1/2 z-[10001] flex items-center gap-2 px-4 py-2 rounded-full bg-black/70 border border-white/10 backdrop-blur-sm shadow-xl transition-all duration-300 pointer-events-none select-none ${
+            showSpeedHUD ? "opacity-100 scale-100" : "opacity-0 scale-95"
+          }`}
+        >
+          <Sliders size={13} className="text-white/70" />
+          <span className="text-white font-bold text-sm tabular-nums tracking-tight">
+            {playbackSpeed}×
+          </span>
+        </div>
+      )}
     </div>
   );
 
@@ -441,13 +510,57 @@ export function PlayerView({
           )}
         </div>
 
-        {!isOffline && (
-          <p className="text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-500/5 border border-amber-500/10 p-2.5 rounded-lg flex items-center gap-1.5">
-            <AlertCircle size={12} className="flex-shrink-0" />
-            Playback speeds up to 2.0x are supported online. Speeds up to 6.0x are supported after downloading this lecture offline.
-          </p>
-        )}
       </div>
+
+      {/* ───── Prev / Next Lecture Navigation ───── */}
+      {videos && videos.length > 1 && (
+        <div className="flex items-center justify-between gap-3">
+          {/* Previous */}
+          <button
+            onClick={() => prevVideo && handleSelectVideo(prevVideo)}
+            disabled={!prevVideo}
+            className={`group flex-1 flex items-center gap-2.5 px-3 py-2.5 rounded-xl border transition-all duration-150 ${
+              prevVideo
+                ? "bg-card border-border hover:bg-muted/60 hover:border-border/80 cursor-pointer"
+                : "bg-muted/20 border-border/40 opacity-40 cursor-not-allowed"
+            }`}
+            title={prevVideo ? `Previous: ${prevVideo.title}` : "No previous lecture"}
+          >
+            <SkipBack size={15} className={`flex-shrink-0 transition-colors ${prevVideo ? "text-muted-foreground group-hover:text-foreground" : "text-muted-foreground/40"}`} />
+            <div className="flex flex-col text-left min-w-0">
+              <span className="text-[9px] uppercase font-bold tracking-wider text-muted-foreground/60">Previous</span>
+              <span className="text-[11px] font-medium text-foreground/80 truncate leading-snug mt-0.5">
+                {prevVideo ? prevVideo.title : "—"}
+              </span>
+            </div>
+          </button>
+
+          {/* Lecture counter */}
+          <span className="text-[10px] font-semibold text-muted-foreground/50 tabular-nums flex-shrink-0">
+            {currentIndex + 1} / {videos.length}
+          </span>
+
+          {/* Next */}
+          <button
+            onClick={() => nextVideo && handleSelectVideo(nextVideo)}
+            disabled={!nextVideo}
+            className={`group flex-1 flex items-center justify-end gap-2.5 px-3 py-2.5 rounded-xl border transition-all duration-150 ${
+              nextVideo
+                ? "bg-card border-border hover:bg-muted/60 hover:border-border/80 cursor-pointer"
+                : "bg-muted/20 border-border/40 opacity-40 cursor-not-allowed"
+            }`}
+            title={nextVideo ? `Next: ${nextVideo.title}` : "No next lecture"}
+          >
+            <div className="flex flex-col text-right min-w-0">
+              <span className="text-[9px] uppercase font-bold tracking-wider text-muted-foreground/60">Next</span>
+              <span className="text-[11px] font-medium text-foreground/80 truncate leading-snug mt-0.5">
+                {nextVideo ? nextVideo.title : "—"}
+              </span>
+            </div>
+            <SkipForward size={15} className={`flex-shrink-0 transition-colors ${nextVideo ? "text-muted-foreground group-hover:text-foreground" : "text-muted-foreground/40"}`} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

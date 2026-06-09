@@ -4,6 +4,11 @@ import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { Sidebar } from "./components/Sidebar";
 import { PlaylistDetail } from "./components/PlaylistDetail";
+import { FolderExplorer } from "./components/FolderExplorer";
+import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
+import { ContextMenuProvider } from "./context/ContextMenuContext";
+import { FolderDeleteDialog } from "./components/FolderDeleteDialog";
+import { PlaylistDeleteDialog } from "./components/PlaylistDeleteDialog";
 import {
   Dialog,
   DialogContent,
@@ -27,6 +32,11 @@ import {
   ChevronRight,
   Menu,
   ChevronsUpDown,
+  Keyboard,
+  Home,
+  Folder,
+  FolderOpen,
+  Play,
 } from "lucide-react";
 
 function App() {
@@ -37,6 +47,7 @@ function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [appVersion, setAppVersion] = useState("");
   const [zoomLevel, setZoomLevel] = useState(1.0);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
 
   // Database States
   const [folders, setFolders] = useState([]);
@@ -44,9 +55,12 @@ function App() {
 
   // Selection States
   const [selectedPlaylist, setSelectedPlaylist] = useState(null);
+  const [selectedFolderId, setSelectedFolderId] = useState(null);
+  const [libraryStats, setLibraryStats] = useState([]);
   const [videos, setVideos] = useState([]);
   const [activeVideo, setActiveVideo] = useState(null);
   const [bookmarks, setBookmarks] = useState([]);
+  const [draggedItem, setDraggedItem] = useState(null);
 
   // System Status States
   const [ytdlpReady, setYtdlpReady] = useState(false);
@@ -57,6 +71,10 @@ function App() {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isFolderOpen, setIsFolderOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // Deletion dialog targets
+  const [folderDeleteTarget, setFolderDeleteTarget] = useState(null); // folder object
+  const [playlistDeleteTarget, setPlaylistDeleteTarget] = useState(null); // playlist object
 
   // Form/Input States
   const [importUrl, setImportUrl] = useState("");
@@ -124,6 +142,7 @@ function App() {
   useEffect(() => {
     fetchFolders();
     fetchPlaylists();
+    fetchLibraryStats();
     checkSystemStatus();
 
     // Listen to download progress events from Rust downloader
@@ -154,6 +173,10 @@ function App() {
         }
         return prev;
       });
+
+      if (payload.status === "completed") {
+        fetchLibraryStats();
+      }
     });
 
     // Listen to FFmpeg config status changes
@@ -211,6 +234,15 @@ function App() {
     }
   };
 
+  const fetchLibraryStats = async () => {
+    try {
+      const data = await invoke("get_library_stats");
+      setLibraryStats(data);
+    } catch (e) {
+      console.error("Failed to fetch library stats:", e);
+    }
+  };
+
   const checkSystemStatus = async () => {
     try {
       const status = await invoke("get_system_status");
@@ -225,8 +257,10 @@ function App() {
     try {
       const data = await invoke("get_playlist_videos", { playlistId });
       setVideos(data);
+      return data;
     } catch (e) {
       console.error(e);
+      return [];
     }
   };
 
@@ -261,6 +295,7 @@ function App() {
   };
 
   const handleDeleteFolder = async (folderId) => {
+    // Legacy simple delete (still used by FolderTree inline trash icon)
     if (
       !confirm(
         "Are you sure you want to delete this folder? Subfolders and playlists will lose their folder association."
@@ -269,11 +304,81 @@ function App() {
       return;
     try {
       await invoke("delete_folder", { id: folderId });
+      if (selectedFolderId === folderId) {
+        setSelectedFolderId(null);
+      }
       fetchFolders();
       fetchPlaylists();
+      fetchLibraryStats();
     } catch (err) {
       alert("Folder deletion failed: " + err);
     }
+  };
+
+  // Show the smart folder delete dialog
+  const handleDeleteFolderWithDialog = (folder) => {
+    setFolderDeleteTarget(folder);
+  };
+
+  // Folder cascade delete (called from FolderDeleteDialog)
+  const handleFolderCascade = async (folderId, deleteAssets) => {
+    try {
+      await invoke("delete_folder_cascade", { folderId, deleteAssets });
+      if (selectedFolderId === folderId) setSelectedFolderId(null);
+      if (selectedPlaylist?.folder_id === folderId) {
+        setSelectedPlaylist(null);
+        setActiveVideo(null);
+      }
+      fetchFolders();
+      fetchPlaylists();
+      fetchLibraryStats();
+    } catch (err) {
+      alert("Failed to delete folder: " + err);
+    }
+  };
+
+  // Move folder contents to root then delete (called from FolderDeleteDialog)
+  const handleFolderMoveToRoot = async (folderId) => {
+    try {
+      await invoke("delete_folder_move_to_root", { folderId });
+      if (selectedFolderId === folderId) setSelectedFolderId(null);
+      fetchFolders();
+      fetchPlaylists();
+      fetchLibraryStats();
+    } catch (err) {
+      alert("Failed to move folder contents: " + err);
+    }
+  };
+
+  // Delete a playlist AND its downloaded assets
+  const handleDeletePlaylistWithAssets = async (playlistId) => {
+    try {
+      await invoke("delete_playlist_with_assets", { playlistId });
+      if (selectedPlaylist?.id === playlistId) {
+        setSelectedPlaylist(null);
+        setActiveVideo(null);
+      }
+      fetchPlaylists();
+      fetchLibraryStats();
+    } catch (err) {
+      alert("Failed to delete course: " + err);
+    }
+  };
+
+  // ── Smart modal helpers: pre-fill context before opening ──
+  // Open the "New Subfolder" modal with parent pre-selected
+  const openNewSubfolderModal = (parentId) => {
+    setParentFolderId(parentId || "");
+    setNewFolderName("");
+    setIsFolderOpen(true);
+  };
+
+  // Open the "Import Course" modal with a folder pre-selected
+  const openImportModal = (folderId) => {
+    setImportFolderId(folderId || "");
+    setImportUrl("");
+    setImportError("");
+    setIsImportOpen(true);
   };
 
   const handleImportPlaylist = async (e) => {
@@ -360,6 +465,7 @@ function App() {
       setImportFolderId("");
       setIsImportOpen(false);
       fetchPlaylists();
+      fetchLibraryStats();
     } catch (err) {
       setImportError(err.toString());
     } finally {
@@ -417,10 +523,61 @@ function App() {
     }
   };
 
+  const getFolderBreadcrumbs = (folderId) => {
+    const crumbs = [];
+    let currentId = folderId;
+    while (currentId) {
+      const folder = folders.find((f) => f.id === currentId);
+      if (folder) {
+        crumbs.unshift(folder);
+        currentId = folder.parent_id;
+      } else {
+        break;
+      }
+    }
+    return crumbs;
+  };
+
   const handleSelectPlaylist = (playlist) => {
     setSelectedPlaylist(playlist);
     setActiveVideo(null);
-    fetchPlaylistVideos(playlist.id);
+    if (playlist) {
+      setSelectedFolderId(playlist.folder_id);
+      fetchPlaylistVideos(playlist.id).then((data) => {
+        // Auto-open the first incomplete video when entering a playlist
+        if (data && data.length > 0) {
+          const firstIncomplete = data.find((v) => !v.is_completed);
+          setActiveVideo(firstIncomplete || data[0]);
+        }
+      });
+    }
+  };
+
+  const handleSelectFolder = (folderId) => {
+    setSelectedFolderId(folderId);
+    setSelectedPlaylist(null);
+    setActiveVideo(null);
+  };
+
+  const handleDragDropMove = async (draggedType, draggedId, targetFolderId) => {
+    console.log("handleDragDropMove CALLED with:", { draggedType, draggedId, targetFolderId });
+    try {
+      if (draggedType === "folder") {
+        console.log("Invoking move_folder command...");
+        const res = await invoke("move_folder", { folderId: draggedId, parentId: targetFolderId });
+        console.log("move_folder response:", res);
+        await fetchFolders();
+      } else if (draggedType === "playlist") {
+        console.log("Invoking move_playlist command...");
+        const res = await invoke("move_playlist", { playlistId: draggedId, folderId: targetFolderId });
+        console.log("move_playlist response:", res);
+        await fetchPlaylists();
+        await fetchLibraryStats();
+      }
+    } catch (err) {
+      console.error("Failed to move item:", err);
+      alert("Failed to move item: " + err);
+    }
   };
 
   const handleSelectVideo = (video) => {
@@ -442,6 +599,7 @@ function App() {
             : v
         )
       );
+      fetchLibraryStats();
     } catch (err) {
       console.error("Failed to update progress:", err);
     }
@@ -495,10 +653,27 @@ function App() {
     }));
   };
 
+  // Global ? keydown listener to toggle shortcuts panel
+  useEffect(() => {
+    const handler = (e) => {
+      const tag = document.activeElement.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || document.activeElement.isContentEditable) return;
+      if (e.key === "?") {
+        e.preventDefault();
+        setIsShortcutsOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   const isSystemReady = ytdlpReady && ffmpegReady;
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground transition-colors duration-300 relative">
+    <ContextMenuProvider>
+    <div className={`flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground transition-colors duration-300 relative ${
+      draggedItem ? "app-dragging" : ""
+    }`}>
       {/* Main Layout Row Container */}
       <div className="flex flex-1 overflow-hidden relative">
         {/* ───── 1. COLLAPSIBLE SIDEBAR ───── */}
@@ -506,19 +681,26 @@ function App() {
           folders={folders}
           playlists={playlists}
           selectedPlaylist={selectedPlaylist}
+          selectedFolderId={selectedFolderId}
+          handleSelectFolder={handleSelectFolder}
           expandedFolders={expandedFolders}
           ytdlpReady={ytdlpReady}
           ffmpegReady={ffmpegReady}
           toggleFolder={toggleFolder}
           handleSelectPlaylist={handleSelectPlaylist}
-          handleDeleteFolder={handleDeleteFolder}
-          setIsImportOpen={setIsImportOpen}
-          setIsFolderOpen={setIsFolderOpen}
+          handleDeleteFolder={handleDeleteFolderWithDialog}
+          handleDownloadPlaylist={handleDownloadPlaylist}
+          handleDeletePlaylistWithAssets={(playlist) => setPlaylistDeleteTarget(playlist)}
+          openNewSubfolderModal={openNewSubfolderModal}
+          openImportModal={openImportModal}
           setIsSettingsOpen={setIsSettingsOpen}
           checkSystemStatus={checkSystemStatus}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
           appVersion={appVersion}
+          handleDragDropMove={handleDragDropMove}
+          draggedItem={draggedItem}
+          setDraggedItem={setDraggedItem}
         />
 
         {/* ───── 2. MAIN CONTAINER ───── */}
@@ -526,38 +708,73 @@ function App() {
           {/* ───── Sticky Header ───── */}
           <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-4 md:px-6">
             {/* Breadcrumbs */}
-            <nav className="flex items-center gap-1.5 text-sm font-medium min-w-0">
+            <nav className="flex items-center gap-1 text-sm font-medium min-w-0">
               <span
-                className="text-muted-foreground truncate hover:text-foreground cursor-pointer transition-colors"
+                className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground cursor-pointer transition-all duration-150 px-2 py-1 rounded-lg hover:bg-muted/65"
                 onClick={() => {
                   setSelectedPlaylist(null);
+                  setSelectedFolderId(null);
                   setActiveVideo(null);
                 }}
               >
-                LecTura
+                <Home size={14} className="text-muted-foreground/75 flex-shrink-0" />
+                <span className="truncate">LecTura</span>
               </span>
+
+              {/* Folder hierarchy crumbs */}
+              {getFolderBreadcrumbs(selectedFolderId).map((crumb, idx, arr) => {
+                const isCurrentFolderLeaf = idx === arr.length - 1 && !selectedPlaylist;
+                return (
+                  <React.Fragment key={crumb.id}>
+                    <ChevronRight
+                      size={12}
+                      className="text-muted-foreground/30 flex-shrink-0 mx-0.5"
+                    />
+                    <span
+                      className="flex items-center gap-1 text-muted-foreground hover:text-foreground cursor-pointer transition-all duration-150 max-w-[150px] px-2 py-1 rounded-lg hover:bg-muted/65"
+                      onClick={() => {
+                        setSelectedFolderId(crumb.id);
+                        setSelectedPlaylist(null);
+                        setActiveVideo(null);
+                      }}
+                    >
+                      {isCurrentFolderLeaf ? (
+                        <FolderOpen size={13} className="text-muted-foreground/75 flex-shrink-0" />
+                      ) : (
+                        <Folder size={13} className="text-muted-foreground/75 flex-shrink-0" />
+                      )}
+                      <span className="truncate">{crumb.name}</span>
+                    </span>
+                  </React.Fragment>
+                );
+              })}
+
               {selectedPlaylist && (
                 <>
                   <ChevronRight
-                    size={14}
-                    className="text-muted-foreground flex-shrink-0"
+                    size={12}
+                    className="text-muted-foreground/30 flex-shrink-0 mx-0.5"
                   />
                   <span
-                    className="text-foreground font-semibold truncate max-w-[250px] cursor-pointer hover:text-muted-foreground transition-colors"
+                    className={`flex items-center gap-1.5 truncate max-w-[200px] cursor-pointer transition-all duration-150 px-2 py-1 rounded-lg hover:bg-muted/65 ${
+                      !activeVideo ? "text-foreground font-semibold" : "text-muted-foreground hover:text-foreground"
+                    }`}
                     onClick={() => setActiveVideo(null)}
                   >
-                    {selectedPlaylist.title}
+                    <Library size={13} className="text-muted-foreground/75 flex-shrink-0" />
+                    <span className="truncate">{selectedPlaylist.title}</span>
                   </span>
                 </>
               )}
               {selectedPlaylist && activeVideo && (
                 <>
                   <ChevronRight
-                    size={14}
-                    className="text-muted-foreground flex-shrink-0"
+                    size={12}
+                    className="text-muted-foreground/30 flex-shrink-0 mx-0.5"
                   />
-                  <span className="text-muted-foreground font-medium truncate max-w-[200px]">
-                    {activeVideo.title}
+                  <span className="flex items-center gap-1.5 text-foreground font-semibold truncate max-w-[180px] px-2 py-1 bg-primary/10 border border-primary/20 text-primary rounded-lg">
+                    <Play size={11} fill="currentColor" className="text-primary flex-shrink-0" />
+                    <span className="truncate">{activeVideo.title}</span>
                   </span>
                 </>
               )}
@@ -583,6 +800,15 @@ function App() {
                   {isSystemReady ? "System Ready" : "Setup Required"}
                 </span>
               </div>
+
+              {/* Shortcuts Button */}
+              <button
+                onClick={() => setIsShortcutsOpen(true)}
+                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors border border-border cursor-pointer"
+                title="Keyboard Shortcuts (?)"
+              >
+                <Keyboard size={18} />
+              </button>
 
               {/* Theme Toggle */}
               <button
@@ -635,76 +861,18 @@ function App() {
                 />
               </div>
             ) : (
-              /* ───── Welcome / Empty State ───── */
-              <div className="h-full w-full overflow-y-auto bg-background">
-                <div className="min-h-full flex flex-col justify-center items-center p-6 md:p-8">
-                  <div className="animate-fade-in max-w-md w-full">
-                    {/* Welcome Card */}
-                    <div className="p-8 bg-card border border-border rounded-xl shadow-sm flex flex-col items-center relative overflow-hidden transition-colors duration-300">
-                      {/* Top accent line */}
-                      <div className="absolute top-0 left-0 right-0 h-[2px] bg-primary" />
-
-                      <div className="w-14 h-14 rounded-2xl bg-muted border border-border flex items-center justify-center mb-5 shadow-inner">
-                        <Library
-                          size={28}
-                          className="text-foreground"
-                        />
-                      </div>
-
-                      <h2 className="text-lg font-bold text-foreground tracking-tight">
-                        Welcome to LecTura
-                      </h2>
-                      <p className="text-xs text-muted-foreground max-w-[320px] mt-2 leading-relaxed text-center">
-                        Import YouTube course structures, organize
-                        them locally, and accelerate offline viewing
-                        with granular playback speeds and timeline
-                        bookmarks.
-                      </p>
-
-                      {/* Action buttons */}
-                      <div className="w-full flex flex-col gap-3 mt-6">
-                        <button
-                          onClick={() => setIsImportOpen(true)}
-                          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 transition-all shadow-sm cursor-pointer"
-                        >
-                          <Plus size={16} />
-                          Import YouTube Course
-                        </button>
-                        <button
-                          onClick={() => setIsFolderOpen(true)}
-                          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold border border-border bg-muted/40 text-foreground hover:bg-muted/80 transition-all shadow-sm cursor-pointer"
-                        >
-                          <Plus size={16} />
-                          Create nesting folders
-                        </button>
-                      </div>
-
-                      {/* System warning */}
-                      {!isSystemReady && (
-                        <div
-                          onClick={() => setIsSettingsOpen(true)}
-                          className="w-full mt-4 p-3 bg-destructive/5 border border-destructive/10 hover:border-destructive/20 rounded-lg flex items-start gap-2.5 text-left cursor-pointer transition duration-150"
-                        >
-                          <AlertCircle
-                            size={15}
-                            className="text-destructive flex-shrink-0 mt-0.5"
-                          />
-                          <div>
-                            <h4 className="text-[10px] font-bold text-destructive uppercase tracking-wide">
-                              Dependencies Action Required
-                            </h4>
-                            <p className="text-[9px] text-muted-foreground mt-0.5 leading-normal">
-                              FFmpeg / yt-dlp config incomplete.
-                              Click to configure binaries for
-                              downloading lectures.
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <FolderExplorer
+                folders={folders}
+                playlists={playlists}
+                selectedFolderId={selectedFolderId}
+                libraryStats={libraryStats}
+                handleSelectFolder={handleSelectFolder}
+                handleSelectPlaylist={handleSelectPlaylist}
+                handleDeleteFolderWithDialog={(folder) => setFolderDeleteTarget(folder)}
+                handleDeletePlaylistWithAssets={(playlist) => setPlaylistDeleteTarget(playlist)}
+                openNewSubfolderModal={openNewSubfolderModal}
+                openImportModal={openImportModal}
+              />
             )}
           </main>
         </div>
@@ -956,7 +1124,33 @@ function App() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* ───── KEYBOARD SHORTCUTS MODAL ───── */}
+      <KeyboardShortcutsModal
+        open={isShortcutsOpen}
+        onClose={() => setIsShortcutsOpen(false)}
+      />
+
+      {/* ───── FOLDER DELETE DIALOG ───── */}
+      {folderDeleteTarget && (
+        <FolderDeleteDialog
+          folder={folderDeleteTarget}
+          onMoveToRoot={handleFolderMoveToRoot}
+          onCascade={handleFolderCascade}
+          onClose={() => setFolderDeleteTarget(null)}
+        />
+      )}
+
+      {/* ───── PLAYLIST DELETE DIALOG ───── */}
+      {playlistDeleteTarget && (
+        <PlaylistDeleteDialog
+          playlist={playlistDeleteTarget}
+          onConfirm={handleDeletePlaylistWithAssets}
+          onClose={() => setPlaylistDeleteTarget(null)}
+        />
+      )}
     </div>
+  </ContextMenuProvider>
   );
 }
 

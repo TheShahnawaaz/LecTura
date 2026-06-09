@@ -219,3 +219,22 @@ body {
 .animate-backdrop-fade {
   animation: backdropFade 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* ─────────────────────────────────────────────────────────────
+   DRAG AND DROP PRODUCTION-GRADE FIX
+   ───────────────────────────────────────────────────────────── */
+.app-dragging .drag-target-row * {
+  pointer-events: none !important;
+}
+
+.drag-target-row,
+[draggable="true"],
+[draggable] {
+  -webkit-user-drag: element !important;
+  user-select: none !important;
+  cursor: grab;
+}
+
+.drag-target-row:active {
+  cursor: grabbing;
+}

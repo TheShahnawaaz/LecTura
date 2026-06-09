@@ -9,30 +9,84 @@ import {
   ChevronRight,
   FolderPlus,
   ChevronsUpDown,
+  Download,
+  Copy,
+  ExternalLink,
+  Trash2,
+  Play,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useContextMenu } from "../context/ContextMenuContext";
+import { open as openBrowser } from "@tauri-apps/api/shell";
+
 
 export function Sidebar({
   folders,
   playlists,
   selectedPlaylist,
+  selectedFolderId,
+  handleSelectFolder,
   expandedFolders,
   ytdlpReady,
   ffmpegReady,
   toggleFolder,
   handleSelectPlaylist,
   handleDeleteFolder,
-  setIsImportOpen,
-  setIsFolderOpen,
+  handleDownloadPlaylist,
+  handleDeletePlaylistWithAssets,
+  openNewSubfolderModal,
+  openImportModal,
   setIsSettingsOpen,
   checkSystemStatus,
   isCollapsed,
   onToggleCollapse,
   appVersion,
+  handleDragDropMove,
+  draggedItem,
+  setDraggedItem,
 }) {
   const [isHeaderHovered, setIsHeaderHovered] = useState(false);
+  const [isDragOverRoot, setIsDragOverRoot] = useState(false);
   const rootPlaylists = playlists.filter((p) => !p.folder_id);
   const isSystemReady = ytdlpReady && ffmpegReady;
+  const { showMenu } = useContextMenu();
+
+  const handleRootPlaylistContextMenu = (e, playlist) => {
+    showMenu(e, [
+      {
+        icon: Play,
+        label: "Open Course",
+        shortcut: "Enter",
+        action: () => handleSelectPlaylist(playlist),
+      },
+      {
+        icon: Download,
+        label: "Download All Lectures",
+        disabled: !handleDownloadPlaylist,
+        action: () => handleDownloadPlaylist && handleDownloadPlaylist(playlist.id),
+      },
+      { type: "separator" },
+      {
+        icon: Copy,
+        label: "Copy URL",
+        disabled: !playlist.url,
+        action: () => playlist.url && navigator.clipboard.writeText(playlist.url),
+      },
+      {
+        icon: ExternalLink,
+        label: "Open in Browser",
+        disabled: !playlist.url,
+        action: () => playlist.url && openBrowser(playlist.url),
+      },
+      { type: "separator" },
+      {
+        icon: Trash2,
+        label: "Delete Course",
+        danger: true,
+        action: () => handleDeletePlaylistWithAssets && handleDeletePlaylistWithAssets(playlist),
+      },
+    ]);
+  };
 
   return (
     <aside
@@ -95,13 +149,13 @@ export function Sidebar({
         {!isCollapsed ? (
           <>
             <button
-              onClick={() => setIsImportOpen(true)}
+              onClick={() => openImportModal && openImportModal(null)}
               className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/80 transition-colors cursor-pointer"
             >
               <Plus size={14} /> Playlist
             </button>
             <button
-              onClick={() => setIsFolderOpen(true)}
+              onClick={() => openNewSubfolderModal && openNewSubfolderModal(null)}
               className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold border border-border bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
             >
               <FolderPlus size={14} /> Folder
@@ -110,14 +164,14 @@ export function Sidebar({
         ) : (
           <>
             <button
-              onClick={() => setIsImportOpen(true)}
+              onClick={() => openImportModal && openImportModal(null)}
               className="w-9 h-9 flex items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/80 transition-colors cursor-pointer"
               title="Import Playlist"
             >
               <Plus size={15} />
             </button>
             <button
-              onClick={() => setIsFolderOpen(true)}
+              onClick={() => openNewSubfolderModal && openNewSubfolderModal(null)}
               className="w-9 h-9 flex items-center justify-center rounded-lg border border-border bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
               title="Create Folder"
             >
@@ -128,7 +182,33 @@ export function Sidebar({
       </div>
 
       {/* ───── Library Navigation Tree (Scrollable) ───── */}
-      <nav className="flex-1 py-4 flex flex-col gap-4 px-3 overflow-y-auto overflow-x-hidden">
+      <nav
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragOverRoot(true);
+          e.dataTransfer.dropEffect = "move";
+        }}
+        onDragLeave={() => setIsDragOverRoot(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragOverRoot(false);
+          console.log("Root Drop Target - Dragged Item:", draggedItem);
+          if (handleDragDropMove) {
+            const draggedType = draggedItem?.type || e.dataTransfer.getData("itemType");
+            const draggedId = draggedItem?.id || e.dataTransfer.getData("itemId");
+            if (draggedId && draggedType) {
+              console.log("Moving item to root:", draggedType, draggedId);
+              handleDragDropMove(draggedType, draggedId, null);
+            }
+          }
+          if (setDraggedItem) {
+            setDraggedItem(null);
+          }
+        }}
+        className={`flex-1 py-4 flex flex-col gap-4 px-3 overflow-y-auto overflow-x-hidden transition-all duration-150 ${
+          isDragOverRoot ? "ring-2 ring-primary/45 ring-dashed bg-primary/5 rounded-lg" : ""
+        }`}
+      >
         {/* Section Label */}
         {!isCollapsed && (
           <span className="px-3 text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
@@ -142,12 +222,21 @@ export function Sidebar({
             folders={folders}
             playlists={playlists}
             selectedPlaylist={selectedPlaylist}
+            selectedFolderId={selectedFolderId}
             expandedFolders={expandedFolders}
             toggleFolder={toggleFolder}
             handleSelectPlaylist={handleSelectPlaylist}
+            handleSelectFolder={handleSelectFolder}
             handleDeleteFolder={handleDeleteFolder}
+            handleDownloadPlaylist={handleDownloadPlaylist}
+            handleDeletePlaylistWithAssets={handleDeletePlaylistWithAssets}
+            openNewSubfolderModal={openNewSubfolderModal}
+            openImportModal={openImportModal}
             isCollapsed={isCollapsed}
             onExpandSidebar={() => isCollapsed && onToggleCollapse()}
+            handleDragDropMove={handleDragDropMove}
+            draggedItem={draggedItem}
+            setDraggedItem={setDraggedItem}
           />
         </div>
 
@@ -168,7 +257,26 @@ export function Sidebar({
                     handleSelectPlaylist(playlist);
                     if (isCollapsed) onToggleCollapse();
                   }}
-                  className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors text-sm w-full text-left cursor-pointer ${
+                  onContextMenu={(e) => handleRootPlaylistContextMenu(e, playlist)}
+                  draggable={true}
+                  onDragStart={(e) => {
+                    e.stopPropagation();
+                    console.log("Root Playlist Drag Start:", playlist.title, playlist.id);
+                    if (setDraggedItem) {
+                      setDraggedItem({ type: "playlist", id: playlist.id });
+                    }
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", playlist.id);
+                    e.dataTransfer.setData("itemType", "playlist");
+                    e.dataTransfer.setData("itemId", playlist.id);
+                  }}
+                  onDragEnd={() => {
+                    console.log("Root Playlist Drag End:", playlist.title);
+                    if (setDraggedItem) {
+                      setTimeout(() => setDraggedItem(null), 50);
+                    }
+                  }}
+                  className={`flex drag-target-row items-center gap-3 px-3 py-2 rounded-lg transition-colors text-sm w-full text-left cursor-pointer ${
                     isSelected
                       ? "bg-primary text-primary-foreground font-semibold"
                       : "text-muted-foreground hover:text-foreground hover:bg-muted/50"

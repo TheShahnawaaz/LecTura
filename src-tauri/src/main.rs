@@ -34,6 +34,9 @@ fn main() {
             commands::get_folders,
             commands::create_folder,
             commands::delete_folder,
+            commands::delete_playlist_with_assets,
+            commands::delete_folder_move_to_root,
+            commands::delete_folder_cascade,
             commands::get_playlists,
             commands::get_playlist_videos,
             commands::add_playlist_with_videos,
@@ -49,6 +52,9 @@ fn main() {
             commands::cancel_download,
             commands::cancel_playlist_download,
             commands::import_playlist,
+            commands::get_library_stats,
+            commands::move_folder,
+            commands::move_playlist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
