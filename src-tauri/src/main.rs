@@ -32,12 +32,14 @@ fn main() {
             commands::get_playlist_videos,
             commands::add_playlist_with_videos,
             commands::update_video_progress,
-            commands::save_note,
-            commands::get_note,
             commands::get_bookmarks,
             commands::add_bookmark,
             commands::delete_bookmark,
             commands::update_download_progress,
+            commands::get_system_status,
+            commands::download_ffmpeg,
+            commands::download_playlist,
+            commands::import_playlist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

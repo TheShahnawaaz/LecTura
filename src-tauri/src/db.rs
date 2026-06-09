@@ -10,9 +10,11 @@ const MIGRATIONS: &[&str] = &[
     r#"
     CREATE TABLE IF NOT EXISTS folders (
         id TEXT PRIMARY KEY,
+        parent_id TEXT,
         name TEXT NOT NULL,
         position INTEGER NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(parent_id) REFERENCES folders(id) ON DELETE CASCADE
     );
     CREATE TABLE IF NOT EXISTS playlists (
         id TEXT PRIMARY KEY,
@@ -38,13 +40,6 @@ const MIGRATIONS: &[&str] = &[
         is_completed INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
-    );
-    CREATE TABLE IF NOT EXISTS notes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        video_id TEXT UNIQUE NOT NULL,
-        content TEXT NOT NULL,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
     );
     CREATE TABLE IF NOT EXISTS bookmarks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -38,6 +38,18 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      - name: Download yt-dlp sidecar binaries
+        shell: bash
+        run: |
+          mkdir -p src-tauri/bin
+          if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o src-tauri/bin/yt-dlp-aarch64-apple-darwin
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o src-tauri/bin/yt-dlp-x86_64-apple-darwin
+            chmod +x src-tauri/bin/yt-dlp-aarch64-apple-darwin src-tauri/bin/yt-dlp-x86_64-apple-darwin
+          elif [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -o src-tauri/bin/yt-dlp-x86_64-pc-windows-msvc.exe
+          fi
+
       - name: Bump version from tag
         shell: bash
         run: |

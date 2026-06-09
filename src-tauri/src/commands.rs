@@ -1,10 +1,13 @@
-use tauri::State;
+use tauri::{State, Manager};
 use crate::db::DbPool;
 use serde::{Serialize, Deserialize};
+use tauri::api::process::{Command, CommandEvent};
+use std::fs::File;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Folder {
     pub id: String,
+    pub parent_id: Option<String>,
     pub name: String,
     pub position: i32,
     pub created_at: String,
@@ -38,14 +41,6 @@ pub struct Video {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Note {
-    pub id: i32,
-    pub video_id: String,
-    pub content: String,
-    pub updated_at: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Bookmark {
     pub id: i32,
     pub video_id: String,
@@ -54,16 +49,23 @@ pub struct Bookmark {
     pub created_at: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SystemStatus {
+    pub ytdlp_ready: bool,
+    pub ffmpeg_ready: bool,
+}
+
 #[tauri::command]
 pub fn get_folders(pool: State<'_, DbPool>) -> Result<Vec<Folder>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, name, position, created_at FROM folders ORDER BY position ASC").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, parent_id, name, position, created_at FROM folders ORDER BY position ASC").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| {
         Ok(Folder {
             id: row.get(0)?,
-            name: row.get(1)?,
-            position: row.get(2)?,
-            created_at: row.get(3)?,
+            parent_id: row.get(1)?,
+            name: row.get(2)?,
+            position: row.get(3)?,
+            created_at: row.get(4)?,
         })
     }).map_err(|e| e.to_string())?;
     
@@ -75,11 +77,11 @@ pub fn get_folders(pool: State<'_, DbPool>) -> Result<Vec<Folder>, String> {
 }
 
 #[tauri::command]
-pub fn create_folder(pool: State<'_, DbPool>, id: String, name: String, position: i32) -> Result<(), String> {
+pub fn create_folder(pool: State<'_, DbPool>, id: String, name: String, parent_id: Option<String>, position: i32) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT OR REPLACE INTO folders (id, name, position) VALUES (?1, ?2, ?3)",
-        (&id, &name, &position),
+        "INSERT OR REPLACE INTO folders (id, parent_id, name, position) VALUES (?1, ?2, ?3, ?4)",
+        (&id, &parent_id, &name, &position),
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -203,38 +205,6 @@ pub fn update_video_progress(pool: State<'_, DbPool>, video_id: String, seconds:
 }
 
 #[tauri::command]
-pub fn save_note(pool: State<'_, DbPool>, video_id: String, content: String) -> Result<(), String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT OR REPLACE INTO notes (video_id, content, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
-        (&video_id, &content),
-    ).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn get_note(pool: State<'_, DbPool>, video_id: String) -> Result<Option<Note>, String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, video_id, content, updated_at FROM notes WHERE video_id = ?1").map_err(|e| e.to_string())?;
-    
-    let mut rows = stmt.query_map([&video_id], |row| {
-        Ok(Note {
-            id: row.get(0)?,
-            video_id: row.get(1)?,
-            content: row.get(2)?,
-            updated_at: row.get(3)?,
-        })
-    }).map_err(|e| e.to_string())?;
-    
-    if let Some(row) = rows.next() {
-        let note = row.map_err(|e| e.to_string())?;
-        Ok(Some(note))
-    } else {
-        Ok(None)
-    }
-}
-
-#[tauri::command]
 pub fn get_bookmarks(pool: State<'_, DbPool>, video_id: String) -> Result<Vec<Bookmark>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare("SELECT id, video_id, timestamp, label, created_at FROM bookmarks WHERE video_id = ?1 ORDER BY timestamp ASC").map_err(|e| e.to_string())?;
@@ -308,4 +278,287 @@ pub fn update_download_progress(
         (status, progress, local_path, video_id),
     ).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// Helpers for checking system binaries
+fn check_ytdlp_ready() -> bool {
+    match Command::new_sidecar("yt-dlp") {
+        Ok(cmd) => {
+            match cmd.args(["--version"]).spawn() {
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+fn check_ffmpeg_ready(app_handle: &tauri::AppHandle) -> bool {
+    if let Some(mut path) = app_handle.path_resolver().app_data_dir() {
+        #[cfg(target_os = "windows")]
+        path.push("ffmpeg.exe");
+        #[cfg(not(target_os = "windows"))]
+        path.push("ffmpeg");
+        
+        path.exists()
+    } else {
+        false
+    }
+}
+
+#[tauri::command]
+pub fn get_system_status(app_handle: tauri::AppHandle) -> Result<SystemStatus, String> {
+    let ytdlp_ready = check_ytdlp_ready();
+    let ffmpeg_ready = check_ffmpeg_ready(&app_handle);
+    Ok(SystemStatus {
+        ytdlp_ready,
+        ffmpeg_ready,
+    })
+}
+
+fn perform_ffmpeg_download(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let app_dir = app_handle.path_resolver().app_data_dir().ok_or("No app data directory")?;
+    if !app_dir.exists() {
+        std::fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let url = if cfg!(target_os = "windows") {
+        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    } else {
+        "https://evermeet.cx/ffmpeg/ffmpeg-8.0.1.zip"
+    };
+    
+    let response = reqwest::blocking::get(url).map_err(|e| format!("Failed to download ffmpeg: {}", e))?;
+    let bytes = response.bytes().map_err(|e| format!("Failed to read response bytes: {}", e))?;
+    
+    let reader = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| format!("Invalid zip archive: {}", e))?;
+    
+    let mut ffmpeg_found = false;
+    
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let file_name = file.name();
+        
+        let is_ffmpeg = if cfg!(target_os = "windows") {
+            file_name.ends_with("ffmpeg.exe")
+        } else {
+            file_name == "ffmpeg" || file_name.ends_with("/ffmpeg")
+        };
+        
+        if is_ffmpeg {
+            let mut dest_path = app_dir.clone();
+            #[cfg(target_os = "windows")]
+            dest_path.push("ffmpeg.exe");
+            #[cfg(not(target_os = "windows"))]
+            dest_path.push("ffmpeg");
+            
+            let mut outfile = File::create(&dest_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
+            
+            #[cfg(not(target_os = "windows"))]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&dest_path).map_err(|e| e.to_string())?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&dest_path, perms).map_err(|e| e.to_string())?;
+            }
+            
+            ffmpeg_found = true;
+            break;
+        }
+    }
+    
+    if ffmpeg_found {
+        Ok(())
+    } else {
+        Err("ffmpeg binary not found in zip archive".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn download_ffmpeg(app_handle: tauri::AppHandle) -> Result<(), String> {
+    std::thread::spawn(move || {
+        let _ = app_handle.emit_all("ffmpeg-download-status", "downloading");
+        
+        match perform_ffmpeg_download(&app_handle) {
+            Ok(_) => {
+                let _ = app_handle.emit_all("ffmpeg-download-status", "success");
+            }
+            Err(e) => {
+                let _ = app_handle.emit_all("ffmpeg-download-status", format!("failed: {}", e));
+            }
+        }
+    });
+    Ok(())
+}
+
+fn parse_progress(line: &str) -> Option<f32> {
+    if line.contains("[download]") && line.contains('%') {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        for part in parts {
+            if part.ends_with('%') {
+                if let Ok(pct) = part.trim_end_matches('%').parse::<f32>() {
+                    return Some(pct);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn download_video_inner(
+    app_handle: tauri::AppHandle, 
+    pool: DbPool, 
+    video_id: String, 
+    url: String
+) -> Result<(), String> {
+    let app_dir = app_handle.path_resolver().app_data_dir().ok_or("No app data directory")?;
+    let downloads_dir = app_dir.join("downloads");
+    if !downloads_dir.exists() {
+        std::fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let output_path = downloads_dir.join(format!("{}.mp4", video_id));
+    let ffmpeg_location = app_dir.to_str().ok_or("Invalid path")?;
+    
+    {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE videos SET download_status = 'downloading', download_progress = 0 WHERE id = ?1",
+            [&video_id],
+        ).map_err(|e| e.to_string())?;
+    }
+    
+    let _ = app_handle.emit_all("download-progress", serde_json::json!({
+        "video_id": video_id,
+        "progress": 0,
+        "status": "downloading"
+    }));
+    
+    let (mut rx, mut _child) = Command::new_sidecar("yt-dlp")
+        .map_err(|e| format!("Failed to resolve sidecar: {}", e))?
+        .args([
+            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--ffmpeg-location", ffmpeg_location,
+            "-o", output_path.to_str().ok_or("Invalid output path")?,
+            &url
+        ])
+        .spawn()
+        .map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
+    
+    let mut success = false;
+    
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(line) => {
+                if let Some(pct) = parse_progress(&line) {
+                    let progress_val = pct as i32;
+                    let _ = pool.get().map(|conn| {
+                        let _ = conn.execute(
+                            "UPDATE videos SET download_progress = ?1 WHERE id = ?2",
+                            (progress_val, &video_id),
+                        );
+                    });
+                    
+                    let _ = app_handle.emit_all("download-progress", serde_json::json!({
+                        "video_id": video_id,
+                        "progress": progress_val,
+                        "status": "downloading"
+                    }));
+                }
+            }
+            CommandEvent::Terminated(payload) => {
+                if payload.code == Some(0) {
+                    success = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    if success {
+        let local_path_str = output_path.to_str().ok_or("Invalid local path")?;
+        {
+            let conn = pool.get().map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE videos SET download_status = 'completed', download_progress = 100, local_path = ?1 WHERE id = ?2",
+                (local_path_str, &video_id),
+            ).map_err(|e| e.to_string())?;
+        }
+        let _ = app_handle.emit_all("download-progress", serde_json::json!({
+            "video_id": video_id,
+            "progress": 100,
+            "status": "completed",
+            "local_path": local_path_str
+        }));
+        Ok(())
+    } else {
+        {
+            let conn = pool.get().map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE videos SET download_status = 'failed' WHERE id = ?1",
+                [&video_id],
+            ).map_err(|e| e.to_string())?;
+        }
+        let _ = app_handle.emit_all("download-progress", serde_json::json!({
+            "video_id": video_id,
+            "progress": 0,
+            "status": "failed"
+        }));
+        Err("yt-dlp failed to download video".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn download_playlist(app_handle: tauri::AppHandle, pool: State<'_, DbPool>, playlist_id: String) -> Result<(), String> {
+    let pool_clone = pool.inner().clone();
+    
+    let conn = pool_clone.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, url, download_status FROM videos WHERE playlist_id = ?1").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&playlist_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    }).map_err(|e| e.to_string())?;
+    
+    let mut videos_to_download = Vec::new();
+    for row in rows {
+        let (id, url, status) = row.map_err(|e| e.to_string())?;
+        if status != "completed" {
+            videos_to_download.push((id, url));
+        }
+    }
+    
+    tauri::async_runtime::spawn(async move {
+        for (video_id, url) in videos_to_download {
+            let _ = download_video_inner(app_handle.clone(), pool_clone.clone(), video_id, url).await;
+        }
+    });
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn import_playlist(url: String) -> Result<String, String> {
+    let (mut rx, _child) = Command::new_sidecar("yt-dlp")
+        .map_err(|e| format!("Failed to resolve sidecar: {}", e))?
+        .args(["--dump-single-json", "--flat-playlist", &url])
+        .spawn()
+        .map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
+    
+    let mut output = String::new();
+    
+    tauri::async_runtime::block_on(async {
+        while let Some(event) = rx.recv().await {
+            if let CommandEvent::Stdout(line) = event {
+                output.push_str(&line);
+                output.push('\n');
+            }
+        }
+    });
+    
+    if output.is_empty() {
+        Err("Failed to get metadata from yt-dlp. Make sure the URL is public and valid.".to_string())
+    } else {
+        Ok(output)
+    }
 }

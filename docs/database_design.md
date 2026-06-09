@@ -27,6 +27,7 @@ erDiagram
 
     FOLDERS {
         TEXT id PK "UUID or client-generated unique string"
+        TEXT parent_id FK "References folders.id (nullable) for subfolders"
         TEXT name "Name of the folder"
         INTEGER position "Sort order index"
         DATETIME created_at "Timestamp of creation"
@@ -78,13 +79,15 @@ erDiagram
 ## 3. Table Schema Definitions
 
 ### `folders`
-Stores user-created collection groups to organize playlists.
+Stores user-created collection groups to organize playlists. Supports nested folders through a self-referential `parent_id` foreign key.
 ```sql
 CREATE TABLE IF NOT EXISTS folders (
     id TEXT PRIMARY KEY,
+    parent_id TEXT,
     name TEXT NOT NULL,
     position INTEGER NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(parent_id) REFERENCES folders(id) ON DELETE CASCADE
 );
 ```
 
@@ -174,10 +177,10 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE IF NOT EXISTS notes (...);
     CREATE TABLE IF NOT EXISTS bookmarks (...);
     "#,
-    // Version 2 (Future expansion):
-    // r#"
-    // ALTER TABLE videos ADD COLUMN playback_speed REAL DEFAULT 1.0;
-    // "#
+    // Version 2: Nested folders support
+    r#"
+    ALTER TABLE folders ADD COLUMN parent_id TEXT REFERENCES folders(id) ON DELETE CASCADE;
+    "#
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -207,19 +210,19 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
 
 ## 5. Rust API Interface (Proposed Command Handlers)
 
-The frontend will interact with the database via these custom Tauri commands (invoked via `@tauri-apps/api/tauri`):
+The frontend will interact with the database and system status via these custom Tauri commands (invoked via `@tauri-apps/api/tauri`):
 
 | Command | Arguments | Returns | Description |
 | :--- | :--- | :--- | :--- |
 | `get_folders` | None | `Vec<Folder>` | Retrieves all folders sorted by `position`. |
-| `create_folder` | `id: String, name: String` | `()` | Creates a new folder. |
-| `delete_folder` | `id: String` | `()` | Deletes a folder (sets associated playlists' `folder_id` to NULL). |
+| `create_folder` | `id: String, name: String, parent_id: Option<String>, position: i32` | `()` | Creates a new folder (optional subfolder). |
+| `delete_folder` | `id: String` | `()` | Deletes a folder (cascades delete to subfolders/playlists). |
 | `get_playlists` | None | `Vec<Playlist>` | Retrieves all playlists. |
 | `get_playlist_videos` | `playlist_id: String` | `Vec<Video>` | Retrieves all videos belonging to a playlist. |
 | `update_video_progress` | `video_id: String, seconds: i32, is_completed: bool` | `()` | Persists current playback position and completion state. |
-| `save_note` | `video_id: String, content: String` | `()` | Inserts or updates the markdown notebook content for a video. |
-| `get_note` | `video_id: String` | `Option<Note>` | Retrieves the note for a video, if it exists. |
 | `get_bookmarks` | `video_id: String` | `Vec<Bookmark>` | Retrieves all bookmarks for a video, sorted by timestamp. |
 | `add_bookmark` | `video_id: String, timestamp: i32, label: String` | `Bookmark` | Adds a new timestamp seek-point. |
 | `delete_bookmark` | `id: i32` | `()` | Deletes a bookmark. |
 | `update_download_progress` | `video_id: String, status: String, progress: i32, local_path: Option<String>` | `()` | Updates download progress and local location. |
+| `get_system_status` | None | `SystemStatus` | Returns status (installed/missing) of `yt-dlp` and `ffmpeg` binaries. |
+| `download_ffmpeg` | None | `()` | Triggers background down-loader for FFMPEG binary. |
