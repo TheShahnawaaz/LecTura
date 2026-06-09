@@ -1,6 +1,6 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { Sliders, WifiOff, Globe, Maximize, Minimize, SkipBack, SkipForward } from "lucide-react";
+import { Sliders, WifiOff, Globe, Maximize, Minimize, SkipBack, SkipForward, CheckCircle2 } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +28,71 @@ export function PlayerView({
   const speedHudTimerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSpeedHUD, setShowSpeedHUD] = useState(false);
+
+  // Autoplay preferences (stored in localStorage)
+  const [autoplayEnabled, setAutoplayEnabled] = useState(() => {
+    return localStorage.getItem("lectura_autoplay") !== "false";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("lectura_autoplay", autoplayEnabled);
+  }, [autoplayEnabled]);
+
+  // Ref to flag that the next video should start playing automatically
+  const shouldAutoplayNextRef = useRef(false);
+
+  // Memoized autoplay flag for the active video load
+  const autoplayThisVideo = useMemo(() => {
+    const val = shouldAutoplayNextRef.current;
+    shouldAutoplayNextRef.current = false;
+    return val;
+  }, [activeVideo?.id]);
+
+  // Keep references updated for listener callbacks to prevent stale closures
+  const autoplayEnabledRef = useRef(autoplayEnabled);
+  useEffect(() => {
+    autoplayEnabledRef.current = autoplayEnabled;
+  }, [autoplayEnabled]);
+
+  const nextVideoRef = useRef(nextVideo);
+  useEffect(() => {
+    nextVideoRef.current = nextVideo;
+  }, [nextVideo]);
+
+  const activeVideoRef = useRef(activeVideo);
+  useEffect(() => {
+    activeVideoRef.current = activeVideo;
+  }, [activeVideo]);
+
+  // Unified video completion and autoplay transition handler
+  const handleVideoEnded = () => {
+    const currentVid = activeVideoRef.current;
+    if (!currentVid) return;
+
+    // 1. Mark current video as completed
+    handleUpdateProgress(currentVid.id, currentVid.duration || 0, true);
+
+    // 2. Autoplay the next video if enabled and it exists
+    if (autoplayEnabledRef.current && nextVideoRef.current) {
+      shouldAutoplayNextRef.current = true;
+      handleSelectVideo(nextVideoRef.current);
+    }
+  };
+
+  // Ref to hold the progress tracking interval for YouTube
+  const ytProgressIntervalRef = useRef(null);
+
+  const clearYtProgressInterval = () => {
+    if (ytProgressIntervalRef.current) {
+      clearInterval(ytProgressIntervalRef.current);
+      ytProgressIntervalRef.current = null;
+    }
+  };
+
+  // Clean up interval on unmount
+  useEffect(() => {
+    return () => clearYtProgressInterval();
+  }, []);
 
   // Ref to hold the latest playback speed so that callbacks don't capture stale state
   const playbackSpeedRef = useRef(playbackSpeed);
@@ -107,6 +172,31 @@ export function PlayerView({
               if (typeof event.target.setPlaybackRate === "function") {
                 event.target.setPlaybackRate(playbackSpeedRef.current);
               }
+              // Autoplay if naturally advanced
+              if (autoplayThisVideo) {
+                event.target.playVideo();
+              }
+            },
+            onStateChange: (event) => {
+              const yt = event.target;
+              if (event.data === window.YT.PlayerState.ENDED) {
+                clearYtProgressInterval();
+                handleVideoEnded();
+              } else if (event.data === window.YT.PlayerState.PLAYING) {
+                clearYtProgressInterval();
+                ytProgressIntervalRef.current = setInterval(() => {
+                  if (typeof yt.getCurrentTime === "function" && typeof yt.getDuration === "function") {
+                    const curTime = yt.getCurrentTime();
+                    const duration = yt.getDuration();
+                    const isDone = curTime >= duration - 10;
+                    if (Math.round(curTime) % 5 === 0) {
+                      handleUpdateProgress(activeVideoRef.current.id, Math.round(curTime), isDone);
+                    }
+                  }
+                }, 1000);
+              } else {
+                clearYtProgressInterval();
+              }
             }
           }
         });
@@ -131,8 +221,9 @@ export function PlayerView({
       // physically deletes the <iframe> element from the DOM, breaking React's virtual DOM reconciliation.
       // The browser naturally cleans up the iframe context on unmount.
       ytPlayerRef.current = null;
+      clearYtProgressInterval();
     };
-  }, [isOffline, activeVideo, isFullscreen]);
+  }, [isOffline, activeVideo, isFullscreen, autoplayThisVideo]);
 
   // Sync playbackSpeed with YouTube Player when it changes
   useEffect(() => {
@@ -372,7 +463,14 @@ export function PlayerView({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOffline, isFullscreen, playbackSpeed, setPlaybackSpeed]);
 
-  const startParam = savedTimeRef.current > 0 ? `&start=${savedTimeRef.current}&autoplay=1` : "";
+  const startParam = useMemo(() => {
+    if (savedTimeRef.current > 0) {
+      const time = savedTimeRef.current;
+      savedTimeRef.current = 0;
+      return `&start=${time}&autoplay=1`;
+    }
+    return autoplayThisVideo ? "&autoplay=1" : "";
+  }, [activeVideo.id, autoplayThisVideo, isFullscreen]);
 
   const playerMarkup = (
     <div 
@@ -393,11 +491,13 @@ export function PlayerView({
           onLoadedMetadata={(e) => {
             // Restore playback speed
             e.currentTarget.playbackRate = playbackSpeed;
-            // Restore playback time
+            // Restore playback time or autoplay if naturally advanced
             if (savedTimeRef.current > 0) {
               e.currentTarget.currentTime = savedTimeRef.current;
               e.currentTarget.play().catch(console.error);
               savedTimeRef.current = 0;
+            } else if (autoplayThisVideo) {
+              e.currentTarget.play().catch(console.error);
             }
           }}
           onTimeUpdate={(e) => {
@@ -408,12 +508,13 @@ export function PlayerView({
               handleUpdateProgress(activeVideo.id, Math.round(curTime), isDone);
             }
           }}
+          onEnded={handleVideoEnded}
         />
       ) : (
         <iframe
           key={activeVideo.id}
           ref={iframeRef}
-          src={`https://www.youtube.com/embed/${activeVideo.id}?enablejsapi=1${startParam}`}
+          src={`https://www.youtube.com/embed/${activeVideo.id}?enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}${startParam}`}
           title={activeVideo.title}
           frameBorder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -484,31 +585,70 @@ export function PlayerView({
             </h3>
           </div>
 
-          {playbackSpeed && (
-            <div className="flex items-center gap-2 bg-muted px-3 py-1.5 rounded-lg border border-border flex-shrink-0">
-              <Sliders size={12} className="text-primary" />
-              <label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Speed</label>
-              <select
-                value={playbackSpeed}
-                onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
-                className="bg-transparent text-xs text-primary font-bold focus:outline-none cursor-pointer outline-none border-none pr-1"
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {/* Completion Toggle Button */}
+            <button
+              onClick={() => {
+                handleUpdateProgress(
+                  activeVideo.id,
+                  activeVideo.is_completed ? 0 : activeVideo.duration,
+                  !activeVideo.is_completed
+                );
+              }}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-all duration-150 h-[34px] ${
+                activeVideo.is_completed
+                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/25"
+                  : "bg-muted/40 border-border text-muted-foreground hover:text-foreground hover:bg-muted/80"
+              }`}
+            >
+              <CheckCircle2 size={13} className={activeVideo.is_completed ? "fill-emerald-500/10 text-emerald-500" : "text-muted-foreground/60"} />
+              <span>{activeVideo.is_completed ? "Completed" : "Mark Completed"}</span>
+            </button>
+
+            {/* Autoplay Toggle Switch */}
+            <div className="flex items-center gap-2 bg-muted px-3 py-1.5 rounded-lg border border-border h-[34px] select-none">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Autoplay</span>
+              <button
+                onClick={() => setAutoplayEnabled(!autoplayEnabled)}
+                className={`relative inline-flex h-4 w-8 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 focus:outline-none ${
+                  autoplayEnabled ? "bg-primary" : "bg-muted-foreground/20"
+                }`}
+                title={autoplayEnabled ? "Disable Autoplay" : "Enable Autoplay"}
               >
-                {(() => {
-                  const baseOptions = isOffline
-                    ? ["0.25", "0.5", "0.75", "1", "1.25", "1.5", "2", "2.5", "3", "4", "5", "6"]
-                    : ["0.25", "0.5", "0.75", "1", "1.25", "1.5", "1.75", "2"];
-                  const currentStr = playbackSpeed.toString();
-                  if (!baseOptions.includes(currentStr)) {
-                    baseOptions.push(currentStr);
-                    baseOptions.sort((a, b) => parseFloat(a) - parseFloat(b));
-                  }
-                  return baseOptions.map(v => (
-                    <option key={v} value={v} className="bg-card text-foreground">{v}x</option>
-                  ));
-                })()}
-              </select>
+                <span
+                  className={`pointer-events-none block h-2.5 w-2.5 rounded-full bg-background shadow-md transition-transform duration-200 ${
+                    autoplayEnabled ? "translate-x-5" : "translate-x-0.5"
+                  }`}
+                />
+              </button>
             </div>
-          )}
+
+            {playbackSpeed && (
+              <div className="flex items-center gap-2 bg-muted px-3 py-1.5 rounded-lg border border-border h-[34px]">
+                <Sliders size={12} className="text-primary" />
+                <label className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Speed</label>
+                <select
+                  value={playbackSpeed}
+                  onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
+                  className="bg-transparent text-xs text-primary font-bold focus:outline-none cursor-pointer outline-none border-none pr-1"
+                >
+                  {(() => {
+                    const baseOptions = isOffline
+                      ? ["0.25", "0.5", "0.75", "1", "1.25", "1.5", "2", "2.5", "3", "4", "5", "6"]
+                      : ["0.25", "0.5", "0.75", "1", "1.25", "1.5", "1.75", "2"];
+                    const currentStr = playbackSpeed.toString();
+                    if (!baseOptions.includes(currentStr)) {
+                      baseOptions.push(currentStr);
+                      baseOptions.sort((a, b) => parseFloat(a) - parseFloat(b));
+                    }
+                    return baseOptions.map(v => (
+                      <option key={v} value={v} className="bg-card text-foreground">{v}x</option>
+                    ));
+                  })()}
+                </select>
+              </div>
+            )}
+          </div>
         </div>
 
       </div>

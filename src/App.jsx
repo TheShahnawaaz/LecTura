@@ -629,6 +629,12 @@ function App() {
             : v
         )
       );
+      setActiveVideo((prev) => {
+        if (prev && prev.id === videoId) {
+          return { ...prev, watched_progress: seconds, is_completed: isCompleted };
+        }
+        return prev;
+      });
       fetchLibraryStats();
     } catch (err) {
       console.error("Failed to update progress:", err);
