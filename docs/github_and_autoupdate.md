@@ -32,7 +32,7 @@ Tauri v1 contains a built-in auto-updater. Rather than running a dedicated web s
   "endpoints": [
     "https://github.com/TheShahnawaaz/LecTura/releases/latest/download/latest.json"
   ],
-  "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IFJVU1c5K095QW15SnJzUG5XSkxldmNURzVvVUNXQytPUE04dm5IUlhCbmZ6UWFkbVJ1NGk3dEtsCg==",
+  "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFCRjEwODg0MzZDQzkyMTcKUldRWGtzdzJoQWp4cXhUb1ZuVExVY01VSklDbWxsekt6aUVnZzVZMHNEMVc1NmlkYWFYdU52WGwK",
   "dialog": true
 }
 ```
@@ -43,15 +43,16 @@ Tauri v1 contains a built-in auto-updater. Rather than running a dedicated web s
 
 To prevent attackers from uploading malicious binaries to your repository and forcing updates on your users, Tauri requires all updater packages to be signed with **Minisign** private/public key pairs.
 
-### How to Generate a Key Pair:
-Run the following command in your terminal using the Tauri CLI:
-```bash
-npm run tauri signer generate
-```
-This generates:
-1. **Public Key**: Put this string in the `pubkey` field inside [tauri.conf.json](file:///Users/shahnawaz/Desktop/Projects/Playground/LecTura/src-tauri/tauri.conf.json). (A placeholder is currently configured).
-2. **Private Key**: Keep this secret. Add it to your GitHub Repository Secrets as `TAURI_SIGNING_PRIVATE_KEY`.
-3. **Private Key Password**: Add this to GitHub Repository Secrets as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+### Current Key Pair Setup:
+A key pair was successfully generated during project configuration:
+1. **Public Key**: Confirmed and added to [tauri.conf.json](file:///Users/shahnawaz/Desktop/Projects/Playground/LecTura/src-tauri/tauri.conf.json):
+   `dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFCRjEwODg0MzZDQzkyMTcKUldRWGtzdzJoQWp4cXhUb1ZuVExVY01VSklDbWxsekt6aUVnZzVZMHNEMVc1NmlkYWFYdU52WGwK`
+2. **Private Key**: Encrypted key block generated. Must be added to your GitHub Repository Secrets as `TAURI_PRIVATE_KEY`.
+3. **Private Key Password**: The password used to encrypt the private key. Must be added to your GitHub Repository Secrets as `TAURI_KEY_PASSWORD`.
+
+> [!NOTE]
+> The GitHub Actions workflow is configured to accept both `TAURI_PRIVATE_KEY`/`TAURI_KEY_PASSWORD` and `TAURI_SIGNING_PRIVATE_KEY`/`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` format styles for cross-compatibility.
+
 
 ---
 
@@ -99,7 +100,7 @@ Runs on `ubuntu-latest` after all matrix builds finish. It executes the script [
 
 ## 5. How to Deploy a New Update
 
-Once you have set up your `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in your repository secrets on GitHub:
+Once you have set up your `TAURI_PRIVATE_KEY` and `TAURI_KEY_PASSWORD` in your repository secrets on GitHub:
 
 1. **Commit your changes**:
    ```bash
