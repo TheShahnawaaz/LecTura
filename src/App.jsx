@@ -9,6 +9,7 @@ import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { ContextMenuProvider } from "./context/ContextMenuContext";
 import { FolderDeleteDialog } from "./components/FolderDeleteDialog";
 import { PlaylistDeleteDialog } from "./components/PlaylistDeleteDialog";
+import { CommandPalette } from "./components/CommandPalette";
 import {
   Dialog,
   DialogContent,
@@ -71,6 +72,7 @@ function App() {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isFolderOpen, setIsFolderOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // Deletion dialog targets
   const [folderDeleteTarget, setFolderDeleteTarget] = useState(null); // folder object
@@ -538,16 +540,18 @@ function App() {
     return crumbs;
   };
 
-  const handleSelectPlaylist = (playlist) => {
+  const handleSelectPlaylist = (playlist, initialVideoId = null) => {
     setSelectedPlaylist(playlist);
     setActiveVideo(null);
     if (playlist) {
       setSelectedFolderId(playlist.folder_id);
       fetchPlaylistVideos(playlist.id).then((data) => {
-        // Auto-open the first incomplete video when entering a playlist
+        // Auto-open the target video or the first incomplete video when entering a playlist
         if (data && data.length > 0) {
-          const firstIncomplete = data.find((v) => !v.is_completed);
-          setActiveVideo(firstIncomplete || data[0]);
+          const targetVideo = initialVideoId 
+            ? data.find((v) => v.id === initialVideoId)
+            : data.find((v) => !v.is_completed);
+          setActiveVideo(targetVideo || data[0]);
         }
       });
     }
@@ -557,6 +561,27 @@ function App() {
     setSelectedFolderId(folderId);
     setSelectedPlaylist(null);
     setActiveVideo(null);
+  };
+
+  const handleSelectSearchResult = (item) => {
+    if (item.item_type === "folder") {
+      handleSelectFolder(item.id);
+      // Ensure the folder is expanded
+      setExpandedFolders((prev) => ({
+        ...prev,
+        [item.id]: true,
+      }));
+    } else if (item.item_type === "playlist") {
+      const pl = playlists.find((p) => p.id === item.id);
+      if (pl) {
+        handleSelectPlaylist(pl);
+      }
+    } else if (item.item_type === "video") {
+      const pl = playlists.find((p) => p.id === item.playlist_id);
+      if (pl) {
+        handleSelectPlaylist(pl, item.id);
+      }
+    }
   };
 
   const handleDragDropMove = async (draggedType, draggedId, targetFolderId) => {
@@ -661,6 +686,18 @@ function App() {
       if (e.key === "?") {
         e.preventDefault();
         setIsShortcutsOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // Global Cmd+K / Ctrl+K keydown listener to toggle search palette
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setIsSearchOpen((prev) => !prev);
       }
     };
     window.addEventListener("keydown", handler);
@@ -1140,6 +1177,13 @@ function App() {
           onClose={() => setFolderDeleteTarget(null)}
         />
       )}
+
+      {/* ───── COMMAND PALETTE ───── */}
+      <CommandPalette
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        onSelectResult={handleSelectSearchResult}
+      />
 
       {/* ───── PLAYLIST DELETE DIALOG ───── */}
       {playlistDeleteTarget && (

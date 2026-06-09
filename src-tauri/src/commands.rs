@@ -577,6 +577,109 @@ pub fn get_library_stats(pool: State<'_, DbPool>) -> Result<Vec<PlaylistStats>, 
     Ok(result)
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SearchItem {
+    pub id: String,
+    pub title: String,
+    pub item_type: String, // "folder" | "playlist" | "video"
+    pub parent_folder_id: Option<String>,
+    pub playlist_id: Option<String>,
+    pub subtitle: String,
+}
+
+#[tauri::command]
+pub fn search_library(pool: State<'_, DbPool>, query: String) -> Result<Vec<SearchItem>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let like_query = format!("%{}%", query);
+    let mut results = Vec::new();
+
+    // 1. Search Folders
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.name, f.parent_id, p.name as parent_name
+         FROM folders f
+         LEFT JOIN folders p ON f.parent_id = p.id
+         WHERE f.name LIKE ?1
+         LIMIT 10"
+    ).map_err(|e| e.to_string())?;
+    
+    let folder_rows = stmt.query_map([&like_query], |row| {
+        let parent_name: Option<String> = row.get(3)?;
+        let subtitle = match parent_name {
+            Some(name) => format!("Folder in {}", name),
+            None => "Folder in Library Root".to_string(),
+        };
+        Ok(SearchItem {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            item_type: "folder".to_string(),
+            parent_folder_id: row.get(2)?,
+            playlist_id: None,
+            subtitle,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    for row in folder_rows {
+        results.push(row.map_err(|e| e.to_string())?);
+    }
+
+    // 2. Search Playlists (Courses)
+    let mut stmt = conn.prepare(
+        "SELECT p.id, p.title, p.folder_id, f.name as folder_name
+         FROM playlists p
+         LEFT JOIN folders f ON p.folder_id = f.id
+         WHERE p.title LIKE ?1 OR p.description LIKE ?1
+         LIMIT 10"
+    ).map_err(|e| e.to_string())?;
+    
+    let playlist_rows = stmt.query_map([&like_query], |row| {
+        let folder_name: Option<String> = row.get(3)?;
+        let subtitle = match folder_name {
+            Some(name) => format!("Course in {}", name),
+            None => "Course in Library Root".to_string(),
+        };
+        Ok(SearchItem {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            item_type: "playlist".to_string(),
+            parent_folder_id: row.get(2)?,
+            playlist_id: None,
+            subtitle,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    for row in playlist_rows {
+        results.push(row.map_err(|e| e.to_string())?);
+    }
+
+    // 3. Search Videos (Lectures)
+    let mut stmt = conn.prepare(
+        "SELECT v.id, v.title, v.playlist_id, p.title as playlist_title
+         FROM videos v
+         INNER JOIN playlists p ON v.playlist_id = p.id
+         WHERE v.title LIKE ?1
+         LIMIT 15"
+    ).map_err(|e| e.to_string())?;
+    
+    let video_rows = stmt.query_map([&like_query], |row| {
+        let playlist_title: String = row.get(3)?;
+        Ok(SearchItem {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            item_type: "video".to_string(),
+            parent_folder_id: None,
+            playlist_id: Some(row.get(2)?),
+            subtitle: format!("Video in {}", playlist_title),
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    for row in video_rows {
+        results.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(results)
+}
+
+
 fn perform_ffmpeg_download(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let app_dir = app_handle.path_resolver().app_data_dir().ok_or("No app data directory")?;
     if !app_dir.exists() {
