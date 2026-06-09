@@ -38,7 +38,10 @@ import {
   Folder,
   FolderOpen,
   Play,
+  Search,
 } from "lucide-react";
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
 function App() {
   // Theme & Collapse States
@@ -819,6 +822,21 @@ function App() {
 
             {/* Header Right Actions */}
             <div className="flex items-center gap-3">
+              {/* Visual Search Trigger Bar */}
+              <button
+                onClick={() => setIsSearchOpen(true)}
+                className="flex items-center gap-2 bg-muted/30 hover:bg-muted/70 border border-border px-3 py-1.5 rounded-lg text-xs text-muted-foreground transition-all duration-150 cursor-pointer w-[140px] md:w-[180px] justify-between group shadow-sm hover:shadow"
+                title={`Search Library (${isMac ? "Cmd+K" : "Ctrl+K"})`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Search size={13} className="text-muted-foreground/60 group-hover:text-foreground/85 flex-shrink-0" />
+                  <span className="truncate">Search...</span>
+                </div>
+                <kbd className="hidden sm:inline-flex h-4 select-none items-center gap-0.5 rounded border border-border bg-muted/60 px-1.5 font-mono text-[9px] font-medium text-muted-foreground opacity-100">
+                  {isMac ? <span className="text-[10px]">⌘</span> : "Ctrl+"}K
+                </kbd>
+              </button>
+
               {/* System Status Indicator */}
               <div className="flex items-center gap-1.5 bg-muted/50 border border-border px-2.5 py-1 rounded-lg">
                 <span className="relative flex h-2 w-2">

@@ -14,6 +14,7 @@ const SECTIONS = [
     title: "Global",
     icon: "🌐",
     shortcuts: [
+      { keys: [MOD, "K"], label: "Search Library" },
       { keys: [MOD, "+"], label: "Zoom In" },
       { keys: [MOD, "−"], label: "Zoom Out" },
       { keys: [MOD, "0"], label: "Reset Zoom" },
