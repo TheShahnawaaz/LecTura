@@ -119,3 +119,41 @@ Once you have set up your `TAURI_PRIVATE_KEY` and `TAURI_KEY_PASSWORD` in your r
    git push origin v0.1.1
    ```
 3. **Observe the Actions tab**: GitHub Actions will boot up, compile the files for Windows and macOS, sign them, upload them, and generate the final auto-updater catalog file (`latest.json`).
+
+---
+
+## 6. Single Source of Truth Versioning & Sync Script
+
+In order to avoid manually updating the version number in multiple configuration files (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`) when drafting a new release, we have configured a unified single source of truth versioning system:
+
+### 1. Source of Truth: `package.json`
+The `package.json` file in the root directory holds the master version number (e.g. `"version": "0.1.0"`).
+
+### 2. tauri.conf.json Dynamic Link
+Tauri config is configured to dynamically pull the version number from `package.json` using the relative file path link:
+```json
+"package": {
+  "productName": "LecTura",
+  "version": "../package.json"
+}
+```
+
+### 3. Cargo.toml Version Sync Script
+Rust's `Cargo.toml` file requires a static string literal for its package version. To automate this, we created a [sync-version.js](file:///Users/shahnawaz/Desktop/Projects/Playground/LecTura/sync-version.js) helper script in the root directory.
+
+This script:
+1. Reads the current `"version"` property from `package.json`.
+2. Locates and updates the `version = "..."` line inside `src-tauri/Cargo.toml` if it differs.
+
+### 4. Integration & Automation
+The sync script is integrated into the primary frontend NPM commands inside `package.json`:
+* `npm run dev`: Executes version synchronization, then launches Vite dev server.
+* `npm run build`: Executes version synchronization, then builds production assets.
+
+This ensures `Cargo.toml` is **always synchronized automatically** during standard development and local builds.
+
+#### Manual Execution
+If you ever want to run the version sync script manually without running the build/dev environment, execute:
+```bash
+node sync-version.js
+```
