@@ -44,6 +44,7 @@ export function Sidebar({
   handleDragDropMove,
   draggedItem,
   setDraggedItem,
+  onSelectFolderEmoji,
 }) {
   const [isHeaderHovered, setIsHeaderHovered] = useState(false);
   const [isDragOverRoot, setIsDragOverRoot] = useState(false);
@@ -237,6 +238,7 @@ export function Sidebar({
             handleDragDropMove={handleDragDropMove}
             draggedItem={draggedItem}
             setDraggedItem={setDraggedItem}
+            onSelectFolderEmoji={onSelectFolderEmoji}
           />
         </div>
 

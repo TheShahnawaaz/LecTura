@@ -9,6 +9,7 @@ import {
   Copy,
   Play,
   FolderOpen,
+  Smile,
 } from "lucide-react";
 import { useContextMenu } from "../context/ContextMenuContext";
 import { open as openBrowser } from "@tauri-apps/api/shell";
@@ -32,6 +33,7 @@ export function FolderTree({
   handleDragDropMove,
   draggedItem,
   setDraggedItem,
+  onSelectFolderEmoji,
 }) {
   const { showMenu } = useContextMenu();
   const [dragOverFolderId, setDragOverFolderId] = React.useState(null);
@@ -74,6 +76,11 @@ export function FolderTree({
         icon: Download,
         label: "Import Course Here",
         action: () => openImportModal && openImportModal(folder.id),
+      },
+      {
+        icon: Smile,
+        label: "Change Emoji",
+        action: () => onSelectFolderEmoji && onSelectFolderEmoji(folder),
       },
       { type: "separator" },
       {
@@ -234,7 +241,11 @@ export function FolderTree({
                 isCollapsed ? "justify-center" : ""
               }`}
             >
-              {isExpanded && !isCollapsed ? (
+              {folder.emoji ? (
+                <span className="text-sm shrink-0 leading-none select-none w-4 h-4 flex items-center justify-center">
+                  {folder.emoji}
+                </span>
+              ) : isExpanded && !isCollapsed ? (
                 <FolderOpen
                   size={16}
                   className={`transition-colors flex-shrink-0 ${

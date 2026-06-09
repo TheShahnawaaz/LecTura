@@ -56,6 +56,7 @@ fn main() {
             commands::move_folder,
             commands::move_playlist,
             commands::search_library,
+            commands::update_folder_emoji,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

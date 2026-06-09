@@ -54,6 +54,10 @@ const MIGRATIONS: &[&str] = &[
     r#"
     DROP TABLE IF EXISTS notes;
     "#,
+    // Version 3: Add emoji column to folders table
+    r#"
+    ALTER TABLE folders ADD COLUMN emoji TEXT;
+    "#,
 ];
 
 pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> {

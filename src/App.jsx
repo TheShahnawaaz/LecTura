@@ -9,6 +9,7 @@ import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { ContextMenuProvider } from "./context/ContextMenuContext";
 import { FolderDeleteDialog } from "./components/FolderDeleteDialog";
 import { PlaylistDeleteDialog } from "./components/PlaylistDeleteDialog";
+import { EmojiPickerModal } from "./components/EmojiPickerModal";
 import { CommandPalette } from "./components/CommandPalette";
 import {
   Dialog,
@@ -77,9 +78,10 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
-  // Deletion dialog targets
+  // Deletion and picker dialog targets
   const [folderDeleteTarget, setFolderDeleteTarget] = useState(null); // folder object
   const [playlistDeleteTarget, setPlaylistDeleteTarget] = useState(null); // playlist object
+  const [emojiPickerTarget, setEmojiPickerTarget] = useState(null); // folder object
 
   // Form/Input States
   const [importUrl, setImportUrl] = useState("");
@@ -619,6 +621,17 @@ function App() {
     }
   };
 
+  const handleUpdateFolderEmoji = async (folderId, emoji) => {
+    try {
+      await invoke("update_folder_emoji", { folderId, emoji });
+      setFolders((prev) =>
+        prev.map((f) => (f.id === folderId ? { ...f, emoji } : f))
+      );
+    } catch (err) {
+      console.error("Failed to update folder emoji:", err);
+    }
+  };
+
   const handleSelectVideo = (video) => {
     setActiveVideo(video);
     if (!rememberSpeed) {
@@ -760,6 +773,7 @@ function App() {
           handleDragDropMove={handleDragDropMove}
           draggedItem={draggedItem}
           setDraggedItem={setDraggedItem}
+          onSelectFolderEmoji={setEmojiPickerTarget}
         />
 
         {/* ───── 2. MAIN CONTAINER ───── */}
@@ -797,7 +811,9 @@ function App() {
                         setActiveVideo(null);
                       }}
                     >
-                      {isCurrentFolderLeaf ? (
+                      {crumb.emoji ? (
+                        <span className="text-sm shrink-0 leading-none mr-0.5">{crumb.emoji}</span>
+                      ) : isCurrentFolderLeaf ? (
                         <FolderOpen size={13} className="text-muted-foreground/75 flex-shrink-0" />
                       ) : (
                         <Folder size={13} className="text-muted-foreground/75 flex-shrink-0" />
@@ -946,6 +962,7 @@ function App() {
                 handleDeletePlaylistWithAssets={(playlist) => setPlaylistDeleteTarget(playlist)}
                 openNewSubfolderModal={openNewSubfolderModal}
                 openImportModal={openImportModal}
+                onSelectFolderEmoji={setEmojiPickerTarget}
               />
             )}
           </main>
@@ -1238,6 +1255,7 @@ function App() {
         isOpen={isSearchOpen}
         onClose={() => setIsSearchOpen(false)}
         onSelectResult={handleSelectSearchResult}
+        folders={folders}
       />
 
       {/* ───── PLAYLIST DELETE DIALOG ───── */}
@@ -1246,6 +1264,17 @@ function App() {
           playlist={playlistDeleteTarget}
           onConfirm={handleDeletePlaylistWithAssets}
           onClose={() => setPlaylistDeleteTarget(null)}
+        />
+      )}
+
+      {/* ───── EMOJI PICKER DIALOG ───── */}
+      {emojiPickerTarget && (
+        <EmojiPickerModal
+          isOpen={!!emojiPickerTarget}
+          onClose={() => setEmojiPickerTarget(null)}
+          folder={emojiPickerTarget}
+          onSelectEmoji={handleUpdateFolderEmoji}
+          appTheme={theme}
         />
       )}
     </div>

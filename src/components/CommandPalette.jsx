@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { Search, Folder, Library, Play, CornerDownLeft, Loader2, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/tauri";
 
-export function CommandPalette({ isOpen, onClose, onSelectResult }) {
+export function CommandPalette({ isOpen, onClose, onSelectResult, folders = [] }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -92,10 +92,26 @@ export function CommandPalette({ isOpen, onClose, onSelectResult }) {
 
   if (!isOpen) return null;
 
-  const getItemIcon = (type) => {
-    switch (type) {
-      case "folder":
+  const getItemIcon = (item) => {
+    switch (item.item_type) {
+      case "folder": {
+        if (item.emoji) {
+          return (
+            <span className="text-sm shrink-0 leading-none select-none w-[15px] h-[15px] flex items-center justify-center">
+              {item.emoji}
+            </span>
+          );
+        }
+        const folderMatch = folders.find((f) => f.id === item.id);
+        if (folderMatch?.emoji) {
+          return (
+            <span className="text-sm shrink-0 leading-none select-none w-[15px] h-[15px] flex items-center justify-center">
+              {folderMatch.emoji}
+            </span>
+          );
+        }
         return <Folder size={15} className="text-blue-500 flex-shrink-0" />;
+      }
       case "playlist":
         return <Library size={15} className="text-violet-500 flex-shrink-0" />;
       case "video":
@@ -180,7 +196,7 @@ export function CommandPalette({ isOpen, onClose, onSelectResult }) {
                   }`}
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    {getItemIcon(item.item_type)}
+                    {getItemIcon(item)}
                     <div className="min-w-0 flex flex-col gap-0.5">
                       <span className="text-xs font-bold truncate">
                         {item.title}

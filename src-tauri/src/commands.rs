@@ -18,6 +18,7 @@ pub struct Folder {
     pub name: String,
     pub position: i32,
     pub created_at: String,
+    pub emoji: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -65,7 +66,7 @@ pub struct SystemStatus {
 #[tauri::command]
 pub fn get_folders(pool: State<'_, DbPool>) -> Result<Vec<Folder>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, parent_id, name, position, created_at FROM folders ORDER BY position ASC").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, parent_id, name, position, created_at, emoji FROM folders ORDER BY position ASC").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |row| {
         Ok(Folder {
             id: row.get(0)?,
@@ -73,6 +74,7 @@ pub fn get_folders(pool: State<'_, DbPool>) -> Result<Vec<Folder>, String> {
             name: row.get(2)?,
             position: row.get(3)?,
             created_at: row.get(4)?,
+            emoji: row.get(5)?,
         })
     }).map_err(|e| e.to_string())?;
     
@@ -81,6 +83,16 @@ pub fn get_folders(pool: State<'_, DbPool>) -> Result<Vec<Folder>, String> {
         result.push(row.map_err(|e| e.to_string())?);
     }
     Ok(result)
+}
+
+#[tauri::command]
+pub fn update_folder_emoji(pool: State<'_, DbPool>, folder_id: String, emoji: Option<String>) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE folders SET emoji = ?1 WHERE id = ?2",
+        (emoji, &folder_id),
+    ).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -585,6 +597,7 @@ pub struct SearchItem {
     pub parent_folder_id: Option<String>,
     pub playlist_id: Option<String>,
     pub subtitle: String,
+    pub emoji: Option<String>,
 }
 
 #[tauri::command]
@@ -595,7 +608,7 @@ pub fn search_library(pool: State<'_, DbPool>, query: String) -> Result<Vec<Sear
 
     // 1. Search Folders
     let mut stmt = conn.prepare(
-        "SELECT f.id, f.name, f.parent_id, p.name as parent_name
+        "SELECT f.id, f.name, f.parent_id, p.name as parent_name, f.emoji
          FROM folders f
          LEFT JOIN folders p ON f.parent_id = p.id
          WHERE f.name LIKE ?1
@@ -615,6 +628,7 @@ pub fn search_library(pool: State<'_, DbPool>, query: String) -> Result<Vec<Sear
             parent_folder_id: row.get(2)?,
             playlist_id: None,
             subtitle,
+            emoji: row.get(4)?,
         })
     }).map_err(|e| e.to_string())?;
     
@@ -644,6 +658,7 @@ pub fn search_library(pool: State<'_, DbPool>, query: String) -> Result<Vec<Sear
             parent_folder_id: row.get(2)?,
             playlist_id: None,
             subtitle,
+            emoji: None,
         })
     }).map_err(|e| e.to_string())?;
     
@@ -669,6 +684,7 @@ pub fn search_library(pool: State<'_, DbPool>, query: String) -> Result<Vec<Sear
             parent_folder_id: None,
             playlist_id: Some(row.get(2)?),
             subtitle: format!("Video in {}", playlist_title),
+            emoji: None,
         })
     }).map_err(|e| e.to_string())?;
     

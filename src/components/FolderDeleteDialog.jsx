@@ -37,8 +37,9 @@ export function FolderDeleteDialog({ folder, onMoveToRoot, onCascade, onClose })
               <h2 className="text-sm font-bold text-foreground">
                 Delete Folder
               </h2>
-              <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                "{folder.name}"
+              <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug flex items-center gap-1.5">
+                {folder.emoji && <span className="text-sm shrink-0 leading-none">{folder.emoji}</span>}
+                <span className="truncate">"{folder.name}"</span>
               </p>
             </div>
           </div>

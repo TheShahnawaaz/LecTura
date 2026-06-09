@@ -14,6 +14,7 @@ import {
   Copy,
   ExternalLink,
   FolderOpen,
+  Smile,
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +32,7 @@ export function FolderExplorer({
   handleDeletePlaylistWithAssets,
   openNewSubfolderModal,
   openImportModal,
+  onSelectFolderEmoji,
 }) {
   
   // Format seconds to hours and minutes
@@ -160,6 +162,11 @@ export function FolderExplorer({
         label: "Import Course Here",
         action: () => openImportModal && openImportModal(folder.id),
       },
+      {
+        icon: Smile,
+        label: "Change Emoji",
+        action: () => onSelectFolderEmoji && onSelectFolderEmoji(folder),
+      },
       { type: "separator" },
       {
         icon: Trash2,
@@ -216,7 +223,11 @@ export function FolderExplorer({
       >
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-9 h-9 rounded-lg bg-muted border border-border flex items-center justify-center text-muted-foreground group-hover:text-primary group-hover:bg-primary/10 transition-colors duration-150 flex-shrink-0">
-            <Folder size={18} />
+            {folder.emoji ? (
+              <span className="text-lg leading-none select-none">{folder.emoji}</span>
+            ) : (
+              <Folder size={18} />
+            )}
           </div>
           <div className="min-w-0">
             <h4 className="text-xs font-semibold text-foreground truncate group-hover:text-primary transition-colors duration-150">
@@ -237,16 +248,28 @@ export function FolderExplorer({
         </div>
 
         {/* Action button overlay on hover */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            handleDeleteFolderWithDialog && handleDeleteFolderWithDialog(folder);
-          }}
-          className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all duration-150 flex-shrink-0"
-          title="Delete Folder"
-        >
-          <Trash2 size={13} />
-        </button>
+        <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-all duration-150 flex-shrink-0">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectFolderEmoji && onSelectFolderEmoji(folder);
+            }}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-150 cursor-pointer"
+            title="Change Emoji"
+          >
+            <Smile size={13} />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDeleteFolderWithDialog && handleDeleteFolderWithDialog(folder);
+            }}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all duration-150 flex-shrink-0"
+            title="Delete Folder"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
       </div>
     );
   };
@@ -389,9 +412,22 @@ export function FolderExplorer({
               </Badge>
             </div>
             
-            <h2 className="text-base font-extrabold text-foreground mt-2.5 leading-tight flex items-center gap-1.5">
-              <Folder size={18} className="text-muted-foreground flex-shrink-0" />
+            <h2 className="text-base font-extrabold text-foreground mt-2.5 leading-tight flex items-center gap-1.5 group/title">
+              {currentFolder && currentFolder.emoji ? (
+                <span className="text-lg shrink-0 leading-none mr-0.5">{currentFolder.emoji}</span>
+              ) : (
+                <Folder size={18} className="text-muted-foreground flex-shrink-0" />
+              )}
               {currentFolder ? currentFolder.name : "My Course Library"}
+              {currentFolder && (
+                <button
+                  onClick={() => onSelectFolderEmoji && onSelectFolderEmoji(currentFolder)}
+                  className="opacity-0 group-hover/title:opacity-100 p-1 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-all duration-150 cursor-pointer ml-1"
+                  title="Change Folder Emoji"
+                >
+                  <Smile size={13} />
+                </button>
+              )}
             </h2>
 
             {/* Statistics subtitle summary */}

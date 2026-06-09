@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useMemo } from "react";
-import { createPortal } from "react-dom";
+
 import { Sliders, WifiOff, Globe, Maximize, Minimize, SkipBack, SkipForward, CheckCircle2 } from "lucide-react";
 import { convertFileSrc } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
@@ -28,6 +28,7 @@ export function PlayerView({
   const speedHudTimerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSpeedHUD, setShowSpeedHUD] = useState(false);
+  const [iframeLoaded, setIframeLoaded] = useState(0);
 
   // Autoplay preferences (stored in localStorage)
   const [autoplayEnabled, setAutoplayEnabled] = useState(() => {
@@ -123,22 +124,36 @@ export function PlayerView({
     }
   }, [isOffline, playbackSpeed, setPlaybackSpeed]);
 
-  // Sync state if OS window changes fullscreen state independently
+
+
+  // Listen for HTML5 fullscreen change events to synchronize state
   useEffect(() => {
-    let unlisten;
-    const setupListener = async () => {
-      try {
-        unlisten = await appWindow.onResized(async () => {
-          const isWinFullscreen = await appWindow.isFullscreen();
-          setIsFullscreen(isWinFullscreen);
-        });
-      } catch (err) {
-        console.error("Failed to setup window listener:", err);
-      }
+    const handleFullscreenChange = () => {
+      const isCurrentlyFullscreen = !!(
+        document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.mozFullScreenElement ||
+        document.msFullscreenElement
+      );
+      
+      setIsFullscreen(isCurrentlyFullscreen);
+      
+      // Sync the Tauri window fullscreen state to match the HTML5 fullscreen state
+      appWindow.setFullscreen(isCurrentlyFullscreen).catch((err) => {
+        console.error("Failed to sync Tauri window fullscreen:", err);
+      });
     };
-    setupListener();
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    document.addEventListener("mozfullscreenchange", handleFullscreenChange);
+    document.addEventListener("MSFullscreenChange", handleFullscreenChange);
+
     return () => {
-      if (unlisten) unlisten();
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+      document.removeEventListener("mozfullscreenchange", handleFullscreenChange);
+      document.removeEventListener("MSFullscreenChange", handleFullscreenChange);
     };
   }, []);
 
@@ -166,14 +181,18 @@ export function PlayerView({
           events: {
             onReady: (event) => {
               ytPlayerRef.current = event.target;
-              // Reset saved time now that it has been loaded
-              savedTimeRef.current = 0;
               // Apply the initial/saved playback speed from ref
               if (typeof event.target.setPlaybackRate === "function") {
                 event.target.setPlaybackRate(playbackSpeedRef.current);
               }
-              // Autoplay if naturally advanced
-              if (autoplayThisVideo) {
+              // Restore time if we have a saved time from fullscreen toggle
+              if (savedTimeRef.current > 0) {
+                if (typeof event.target.seekTo === "function") {
+                  event.target.seekTo(savedTimeRef.current, true);
+                }
+                event.target.playVideo();
+                savedTimeRef.current = 0;
+              } else if (autoplayThisVideo) {
                 event.target.playVideo();
               }
             },
@@ -223,7 +242,7 @@ export function PlayerView({
       ytPlayerRef.current = null;
       clearYtProgressInterval();
     };
-  }, [isOffline, activeVideo, isFullscreen, autoplayThisVideo]);
+  }, [isOffline, activeVideo, autoplayThisVideo, iframeLoaded]);
 
   // Sync playbackSpeed with YouTube Player when it changes
   useEffect(() => {
@@ -233,26 +252,80 @@ export function PlayerView({
   }, [playbackSpeed, isOffline]);
 
   const toggleFullscreen = async () => {
+    const container = containerRef.current;
+    if (!container) return;
+
     if (!isOffline && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
       savedTimeRef.current = Math.round(ytPlayerRef.current.getCurrentTime());
     } else if (isOffline && videoPlayerRef.current) {
       savedTimeRef.current = videoPlayerRef.current.currentTime;
     }
+
+    // Set a timeout to clear the saved time after 10 seconds if no reload occurred (fallback)
+    setTimeout(() => {
+      savedTimeRef.current = 0;
+    }, 10000);
+
     try {
-      const nextFullscreen = !isFullscreen;
-      await appWindow.setFullscreen(nextFullscreen);
-      setIsFullscreen(nextFullscreen);
+      const isCurrentlyFullscreen = !!(
+        document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.mozFullScreenElement ||
+        document.msFullscreenElement
+      );
+
+      if (!isCurrentlyFullscreen) {
+        // Request browser/webview fullscreen
+        if (container.requestFullscreen) {
+          await container.requestFullscreen();
+        } else if (container.webkitRequestFullscreen) {
+          await container.webkitRequestFullscreen();
+        } else if (container.mozRequestFullScreen) {
+          await container.mozRequestFullScreen();
+        } else if (container.msRequestFullscreen) {
+          await container.msRequestFullscreen();
+        } else {
+          // If HTML5 fullscreen is not supported, fallback to Tauri-only window fullscreen
+          const nextFullscreen = !isFullscreen;
+          await appWindow.setFullscreen(nextFullscreen);
+          setIsFullscreen(nextFullscreen);
+        }
+      } else {
+        // Exit browser/webview fullscreen
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+          await document.webkitExitFullscreen();
+        } else if (document.mozCancelFullScreen) {
+          await document.mozCancelFullScreen();
+        } else if (document.msExitFullscreen) {
+          await document.msExitFullscreen();
+        } else {
+          // Fallback exit Tauri fullscreen
+          await appWindow.setFullscreen(false);
+          setIsFullscreen(false);
+        }
+      }
     } catch (err) {
-      console.error("Failed to toggle native window fullscreen:", err);
-      setIsFullscreen(!isFullscreen);
+      console.error("Fullscreen toggle failed, falling back to Tauri-only:", err);
+      try {
+        const nextFullscreen = !isFullscreen;
+        await appWindow.setFullscreen(nextFullscreen);
+        setIsFullscreen(nextFullscreen);
+      } catch (tauriErr) {
+        console.error("Tauri setFullscreen fallback failed:", tauriErr);
+      }
     }
   };
 
   // Keyboard Shortcuts (Space, K, Arrows, M, J, L, Numbers, F, Esc)
   useEffect(() => {
     const handleKeyDown = async (e) => {
-      // Ignore repeated keydown events from key being held down
-      if (e.repeat) return;
+      // Ignore repeated keydown events only for toggles/navigation, allowing continuous seeking/speed/volume keys
+      const nonRepeatableKeys = [" ", "k", "f", "m", "n", "p", "escape", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+      if (e.repeat && nonRepeatableKeys.includes(e.key.toLowerCase())) {
+        return;
+      }
 
       // Ignore if typing in text input fields or select dropdowns
       const tag = document.activeElement.tagName;
@@ -274,17 +347,27 @@ export function PlayerView({
 
       // Exit fullscreen on Esc key
       if (e.key === "Escape" && isFullscreen) {
-        if (!isOffline && ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
-          savedTimeRef.current = Math.round(ytPlayerRef.current.getCurrentTime());
-        } else if (isOffline && videoPlayerRef.current) {
-          savedTimeRef.current = videoPlayerRef.current.currentTime;
-        }
+        e.preventDefault();
         try {
-          await appWindow.setFullscreen(false);
+          if (document.exitFullscreen) {
+            await document.exitFullscreen();
+          } else if (document.webkitExitFullscreen) {
+            await document.webkitExitFullscreen();
+          } else if (document.mozCancelFullScreen) {
+            await document.mozCancelFullScreen();
+          } else if (document.msExitFullscreen) {
+            await document.msExitFullscreen();
+          }
         } catch (err) {
-          console.error(err);
+          console.error("Failed to exit fullscreen:", err);
+          // Fallback exit Tauri fullscreen
+          try {
+            await appWindow.setFullscreen(false);
+          } catch (tauriErr) {
+            console.error("Tauri fallback exit failed:", tauriErr);
+          }
+          setIsFullscreen(false);
         }
-        setIsFullscreen(false);
         return;
       }
 
@@ -463,14 +546,22 @@ export function PlayerView({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOffline, isFullscreen, playbackSpeed, setPlaybackSpeed]);
 
+  // Reset saved time when active video changes to prevent carry-over
+  useEffect(() => {
+    savedTimeRef.current = 0;
+  }, [activeVideo?.id]);
+
   const startParam = useMemo(() => {
+    if (isOffline) return ""; // Do not touch savedTimeRef for offline videos!
+
     if (savedTimeRef.current > 0) {
       const time = savedTimeRef.current;
-      savedTimeRef.current = 0;
+      // Note: We do NOT clear savedTimeRef.current here so it can be programmatically
+      // read and cleared inside the YT player's onReady event handler.
       return `&start=${time}&autoplay=1`;
     }
     return autoplayThisVideo ? "&autoplay=1" : "";
-  }, [activeVideo.id, autoplayThisVideo, isFullscreen]);
+  }, [activeVideo.id, autoplayThisVideo, isOffline]);
 
   const playerMarkup = (
     <div 
@@ -520,6 +611,7 @@ export function PlayerView({
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           allowFullScreen
           className="w-full h-full"
+          onLoad={() => setIframeLoaded((prev) => prev + 1)}
         />
       )}
 
@@ -551,11 +643,11 @@ export function PlayerView({
   );
 
   return (
-    <div className="flex flex-col gap-4 animate-fade-in">
-      {isFullscreen 
-        ? createPortal(playerMarkup, document.body)
-        : playerMarkup
-      }
+    <div 
+      className="flex flex-col gap-4 animate-fade-in"
+      style={isFullscreen ? { transform: "none", animation: "none" } : {}}
+    >
+      {playerMarkup}
 
       {/* Metadata & Controls Card */}
       <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-3 shadow-sm transition-colors duration-300">
