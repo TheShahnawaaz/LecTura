@@ -105,4 +105,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          node .github/scripts/generate-latest-json.js
+          node .github/scripts/generate-latest-json.cjs
