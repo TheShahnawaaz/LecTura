@@ -300,15 +300,8 @@ fn check_ytdlp_ready() -> bool {
     }
 }
 
-fn is_ffmpeg_in_path() -> bool {
-    std::process::Command::new("ffmpeg")
-        .arg("-version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-fn check_ffmpeg_ready(app_handle: &tauri::AppHandle) -> bool {
+fn get_ffmpeg_path(app_handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // 1. Check local sandboxed app_data_dir
     if let Some(mut path) = app_handle.path_resolver().app_data_dir() {
         #[cfg(target_os = "windows")]
         path.push("ffmpeg.exe");
@@ -316,10 +309,44 @@ fn check_ffmpeg_ready(app_handle: &tauri::AppHandle) -> bool {
         path.push("ffmpeg");
         
         if path.exists() {
-            return true;
+            return Some(path);
         }
     }
-    is_ffmpeg_in_path()
+
+    // 2. Check system PATH
+    if std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+    {
+        return Some(std::path::PathBuf::from("ffmpeg"));
+    }
+
+    // 3. Check common macOS absolute locations (where Homebrew installs binaries)
+    #[cfg(target_os = "macos")]
+    {
+        let common_paths = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"];
+        for path_str in common_paths {
+            let path = std::path::PathBuf::from(path_str);
+            if path.exists() {
+                if std::process::Command::new(&path)
+                    .arg("-version")
+                    .output()
+                    .map(|output| output.status.success())
+                    .unwrap_or(false)
+                {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn check_ffmpeg_ready(app_handle: &tauri::AppHandle) -> bool {
+    get_ffmpeg_path(app_handle).is_some()
 }
 
 #[tauri::command]
@@ -438,21 +465,20 @@ async fn download_video_inner(
     
     let output_path = downloads_dir.join(format!("{}.mp4", video_id));
     
-    let mut ffmpeg_location_path = app_dir.clone();
-    #[cfg(target_os = "windows")]
-    ffmpeg_location_path.push("ffmpeg.exe");
-    #[cfg(not(target_os = "windows"))]
-    ffmpeg_location_path.push("ffmpeg");
-
     let mut args = vec![
         "-f".to_string(), 
         "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best".to_string(),
     ];
 
-    if ffmpeg_location_path.exists() {
-        let ffmpeg_location = app_dir.to_str().ok_or("Invalid path")?;
-        args.push("--ffmpeg-location".to_string());
-        args.push(ffmpeg_location.to_string());
+    if let Some(ffmpeg_path) = get_ffmpeg_path(&app_handle) {
+        if ffmpeg_path.is_absolute() {
+            if let Some(parent) = ffmpeg_path.parent() {
+                if let Some(parent_str) = parent.to_str() {
+                    args.push("--ffmpeg-location".to_string());
+                    args.push(parent_str.to_string());
+                }
+            }
+        }
     }
 
     args.push("-o".to_string());

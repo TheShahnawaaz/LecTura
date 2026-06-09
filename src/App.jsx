@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { Sidebar } from "./components/Sidebar";
 import { PlaylistDetail } from "./components/PlaylistDetail";
 import {
@@ -34,6 +35,8 @@ function App() {
     () => localStorage.getItem("lectura-theme") || "dark"
   );
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
+  const [zoomLevel, setZoomLevel] = useState(1.0);
 
   // Database States
   const [folders, setFolders] = useState([]);
@@ -82,6 +85,40 @@ function App() {
     document.documentElement.classList.toggle("dark", theme === "dark");
     localStorage.setItem("lectura-theme", theme);
   }, [theme]);
+
+  // Fetch application version at startup dynamically
+  useEffect(() => {
+    getVersion()
+      .then((ver) => setAppVersion(ver))
+      .catch((err) => console.error("Failed to get version:", err));
+  }, []);
+
+  // Handle standard zoom keyboard shortcuts (Cmd/Ctrl + Plus/Minus/Zero)
+  useEffect(() => {
+    const handleZoom = (e) => {
+      const isMetaOrCtrl = e.metaKey || e.ctrlKey;
+      if (!isMetaOrCtrl) return;
+
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        setZoomLevel((prev) => Math.min(2.0, prev + 0.1));
+      } else if (e.key === "-") {
+        e.preventDefault();
+        setZoomLevel((prev) => Math.max(0.5, prev - 0.1));
+      } else if (e.key === "0") {
+        e.preventDefault();
+        setZoomLevel(1.0);
+      }
+    };
+
+    window.addEventListener("keydown", handleZoom);
+    return () => window.removeEventListener("keydown", handleZoom);
+  }, []);
+
+  // Apply zoom factor to document body
+  useEffect(() => {
+    document.body.style.zoom = zoomLevel;
+  }, [zoomLevel]);
 
   // Listeners and Initial Load
   useEffect(() => {
@@ -481,6 +518,7 @@ function App() {
           checkSystemStatus={checkSystemStatus}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
+          appVersion={appVersion}
         />
 
         {/* ───── 2. MAIN CONTAINER ───── */}

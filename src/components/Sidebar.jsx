@@ -28,6 +28,7 @@ export function Sidebar({
   checkSystemStatus,
   isCollapsed,
   onToggleCollapse,
+  appVersion,
 }) {
   const [isHeaderHovered, setIsHeaderHovered] = useState(false);
   const rootPlaylists = playlists.filter((p) => !p.folder_id);
@@ -52,7 +53,7 @@ export function Sidebar({
                   LecTura
                 </span>
                 <span className="text-[10px] text-muted-foreground font-medium truncate">
-                  Offline Player v0.1.1
+                  Offline Player {appVersion ? `v${appVersion}` : ""}
                 </span>
               </div>
             </div>
