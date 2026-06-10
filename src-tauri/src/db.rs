@@ -58,6 +58,25 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE folders ADD COLUMN emoji TEXT;
     "#,
+    // Version 4: Add study_logs table for tracking active study sessions
+    r#"
+    CREATE TABLE IF NOT EXISTS study_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        video_id TEXT NOT NULL,
+        duration_seconds INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE
+    );
+    "#,
+    // Version 5: Create indexes for foreign keys and query performance
+    r#"
+    CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders (parent_id);
+    CREATE INDEX IF NOT EXISTS idx_playlists_folder_id ON playlists (folder_id);
+    CREATE INDEX IF NOT EXISTS idx_videos_playlist_id ON videos (playlist_id);
+    CREATE INDEX IF NOT EXISTS idx_bookmarks_video_id ON bookmarks (video_id);
+    CREATE INDEX IF NOT EXISTS idx_study_logs_video_id ON study_logs (video_id);
+    CREATE INDEX IF NOT EXISTS idx_study_logs_created_at ON study_logs (created_at);
+    "#,
 ];
 
 pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> {
