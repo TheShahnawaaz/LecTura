@@ -19,6 +19,7 @@ export function PlaylistDetail({
   handleSelectVideo,
   handleCancelVideoDownload,
   handleCancelPlaylistDownload,
+  onStudyTimeLogged,
 }) {
   const activeVideoRef = useRef(null);
 
@@ -36,6 +37,20 @@ export function PlaylistDetail({
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
     return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const formatStudyTime = (secs) => {
+    if (!secs || secs <= 0) return "0s";
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = Math.floor(secs % 60);
+    if (h > 0) {
+      return `${h}h ${m}m`;
+    }
+    if (m > 0) {
+      return `${m}m ${s}s`;
+    }
+    return `${s}s`;
   };
 
   const { showMenu } = useContextMenu();
@@ -98,6 +113,8 @@ export function PlaylistDetail({
   const progressPercent =
     totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
+  const totalPlaylistStudyTime = videos.reduce((acc, v) => acc + (v.study_time || 0), 0);
+
   const isPlaylistDownloading = videos.some(
     (v) => v.download_status === "downloading" || v.download_status === "pending"
   );
@@ -115,6 +132,7 @@ export function PlaylistDetail({
             setPlaybackSpeed={setPlaybackSpeed}
             handleUpdateProgress={handleUpdateProgress}
             handleSelectVideo={handleSelectVideo}
+            onStudyTimeLogged={onStudyTimeLogged}
           />
         ) : (
           /* No Active Video placeholder */
@@ -162,6 +180,12 @@ export function PlaylistDetail({
                 <span>{progressPercent}%</span>
               </div>
               <Progress value={progressPercent} className="h-1 bg-muted" />
+              {totalPlaylistStudyTime > 0 && (
+                <div className="flex items-center gap-1 text-[9px] text-primary font-bold mt-1.5 leading-none select-none">
+                  <span>⏱️ Course Studied:</span>
+                  <span>{formatStudyTime(totalPlaylistStudyTime)}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -242,9 +266,17 @@ export function PlaylistDetail({
 
                   {/* Status metrics row */}
                   <div className="flex justify-between items-center gap-3">
-                    <span className="text-[9px] text-muted-foreground font-semibold tabular-nums">
-                      {formatTime(video.duration)}
-                    </span>
+                    <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground font-semibold tabular-nums">
+                      <span>{formatTime(video.duration)}</span>
+                      {video.study_time > 0 && (
+                        <>
+                          <span className="text-muted-foreground/30">•</span>
+                          <span className="text-primary font-bold">
+                            ⏱️ {formatStudyTime(video.study_time)}
+                          </span>
+                        </>
+                      )}
+                    </div>
 
                     <div
                       className="flex items-center"

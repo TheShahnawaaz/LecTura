@@ -46,6 +46,8 @@ pub struct Video {
     pub watched_progress: i32,
     pub is_completed: bool,
     pub created_at: String,
+    #[serde(default)]
+    pub study_time: Option<i32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -313,12 +315,14 @@ pub fn get_playlists(pool: State<'_, DbPool>) -> Result<Vec<Playlist>, String> {
 pub fn get_playlist_videos(pool: State<'_, DbPool>, playlist_id: String) -> Result<Vec<Video>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed, created_at 
+        "SELECT id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed, created_at,
+                (SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE video_id = videos.id) as study_time
          FROM videos WHERE playlist_id = ?1 ORDER BY created_at ASC"
     ).map_err(|e| e.to_string())?;
     
     let rows = stmt.query_map([&playlist_id], |row| {
         let is_completed_val: i32 = row.get(10)?;
+        let study_time_val: i32 = row.get(12)?;
         Ok(Video {
             id: row.get(0)?,
             playlist_id: row.get(1)?,
@@ -332,6 +336,7 @@ pub fn get_playlist_videos(pool: State<'_, DbPool>, playlist_id: String) -> Resu
             watched_progress: row.get(9)?,
             is_completed: is_completed_val != 0,
             created_at: row.get(11)?,
+            study_time: Some(study_time_val),
         })
     }).map_err(|e| e.to_string())?;
     
@@ -392,6 +397,72 @@ pub fn update_video_progress(pool: State<'_, DbPool>, video_id: String, seconds:
         (seconds, if is_completed { 1 } else { 0 }, &video_id),
     ).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StudyStats {
+    pub total_study_seconds: i32,
+    pub total_video_covered_seconds: i32,
+    pub completed_lectures_count: i32,
+    pub daily_logs: HashMap<String, i32>,
+}
+
+#[tauri::command]
+pub fn log_study_time(pool: State<'_, DbPool>, video_id: String, duration_seconds: i32) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO study_logs (video_id, duration_seconds) VALUES (?1, ?2)",
+        (video_id, duration_seconds),
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_study_stats(pool: State<'_, DbPool>) -> Result<StudyStats, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+
+    // 1. Total study seconds
+    let total_study_seconds: i32 = conn.query_row(
+        "SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs",
+        [],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    // 2. Total video covered seconds (completed videos duration)
+    let total_video_covered_seconds: i32 = conn.query_row(
+        "SELECT COALESCE(SUM(duration), 0) FROM videos WHERE is_completed = 1",
+        [],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    // 3. Completed lectures count
+    let completed_lectures_count: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM videos WHERE is_completed = 1",
+        [],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    // 4. Daily study logs
+    let mut stmt = conn.prepare(
+        "SELECT date(created_at, 'localtime') as day, SUM(duration_seconds) FROM study_logs GROUP BY day"
+    ).map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+    }).map_err(|e| e.to_string())?;
+
+    let mut daily_logs = HashMap::new();
+    for row in rows {
+        let (day, seconds) = row.map_err(|e| e.to_string())?;
+        daily_logs.insert(day, seconds);
+    }
+
+    Ok(StudyStats {
+        total_study_seconds,
+        total_video_covered_seconds,
+        completed_lectures_count,
+        daily_logs,
+    })
 }
 
 #[tauri::command]
@@ -551,6 +622,8 @@ pub struct PlaylistStats {
     pub total_watched: i32,
     pub downloaded_videos: i32,
     pub completed_duration: i32,
+    #[serde(default)]
+    pub total_study_time: Option<i32>,
 }
 
 #[tauri::command]
@@ -564,13 +637,15 @@ pub fn get_library_stats(pool: State<'_, DbPool>) -> Result<Vec<PlaylistStats>, 
             SUM(duration) as total_duration,
             SUM(watched_progress) as total_watched,
             SUM(CASE WHEN local_path IS NOT NULL THEN 1 ELSE 0 END) as downloaded_videos,
-            SUM(CASE WHEN is_completed = 1 THEN COALESCE(duration, 0) ELSE 0 END) as completed_duration
-         FROM videos 
+            SUM(CASE WHEN is_completed = 1 THEN COALESCE(duration, 0) ELSE 0 END) as completed_duration,
+            (SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE video_id IN (SELECT id FROM videos WHERE playlist_id = v.playlist_id)) as total_study_time
+         FROM videos v
          WHERE playlist_id IS NOT NULL
          GROUP BY playlist_id"
     ).map_err(|e| e.to_string())?;
     
     let rows = stmt.query_map([], |row| {
+        let study_time_val: i32 = row.get(7)?;
         Ok(PlaylistStats {
             playlist_id: row.get(0)?,
             total_videos: row.get(1)?,
@@ -579,6 +654,7 @@ pub fn get_library_stats(pool: State<'_, DbPool>) -> Result<Vec<PlaylistStats>, 
             total_watched: row.get(4)?,
             downloaded_videos: row.get(5)?,
             completed_duration: row.get(6)?,
+            total_study_time: Some(study_time_val),
         })
     }).map_err(|e| e.to_string())?;
     
