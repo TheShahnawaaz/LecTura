@@ -111,6 +111,24 @@ function App() {
     localStorage.setItem("lectura_remember_speed", rememberSpeed);
   }, [rememberSpeed]);
 
+  // Daily Study Goal Preference (in minutes, default 30)
+  const [dailyStudyGoal, setDailyStudyGoal] = useState(() => {
+    const saved = localStorage.getItem("lectura_daily_study_goal");
+    return saved ? parseInt(saved, 10) : 30;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("lectura_daily_study_goal", dailyStudyGoal);
+  }, [dailyStudyGoal]);
+
+  // Study Stats State
+  const [studyStats, setStudyStats] = useState({
+    total_study_seconds: 0,
+    total_video_covered_seconds: 0,
+    completed_lectures_count: 0,
+    daily_logs: {},
+  });
+
   // Player ref for HTML5 video playback controls
   const videoPlayerRef = useRef(null);
 
@@ -159,6 +177,7 @@ function App() {
     fetchFolders();
     fetchPlaylists();
     fetchLibraryStats();
+    fetchStudyStats();
     checkSystemStatus();
 
     // Listen to download progress events from Rust downloader
@@ -258,6 +277,39 @@ function App() {
       setLibraryStats(data);
     } catch (e) {
       console.error("Failed to fetch library stats:", e);
+    }
+  };
+
+  const fetchStudyStats = async () => {
+    try {
+      const stats = await invoke("get_study_stats");
+      setStudyStats(stats);
+    } catch (err) {
+      console.error("Failed to fetch study stats:", err);
+    }
+  };
+
+  const handleLogStudyTime = async (videoId, seconds) => {
+    try {
+      await invoke("log_study_time", { videoId, durationSeconds: seconds });
+      // Update local study_time for the video in State in real-time
+      setVideos((prev) =>
+        prev.map((v) =>
+          v.id === videoId
+            ? { ...v, study_time: (v.study_time || 0) + seconds }
+            : v
+        )
+      );
+      setActiveVideo((prev) => {
+        if (prev && prev.id === videoId) {
+          return { ...prev, study_time: (prev.study_time || 0) + seconds };
+        }
+        return prev;
+      });
+      // Don't call fetchStudyStats() here — it triggers App re-renders that
+      // destabilize the heartbeat timer. Stats refresh when navigating home.
+    } catch (err) {
+      console.error("Failed to log study time:", err);
     }
   };
 
@@ -660,6 +712,7 @@ function App() {
         return prev;
       });
       fetchLibraryStats();
+      fetchStudyStats();
     } catch (err) {
       console.error("Failed to update progress:", err);
     }
@@ -948,6 +1001,7 @@ function App() {
                   handleSelectVideo={handleSelectVideo}
                   handleCancelVideoDownload={handleCancelVideoDownload}
                   handleCancelPlaylistDownload={handleCancelPlaylistDownload}
+                  onStudyTimeLogged={handleLogStudyTime}
                 />
               </div>
             ) : (
@@ -963,6 +1017,9 @@ function App() {
                 openNewSubfolderModal={openNewSubfolderModal}
                 openImportModal={openImportModal}
                 onSelectFolderEmoji={setEmojiPickerTarget}
+                studyStats={studyStats}
+                dailyStudyGoal={dailyStudyGoal}
+                fetchStudyStats={fetchStudyStats}
               />
             )}
           </main>
@@ -1044,6 +1101,55 @@ function App() {
                   onChange={(e) => setRememberSpeed(e.target.checked)}
                   className="w-4 h-4 rounded border-border text-primary focus:ring-primary cursor-pointer accent-primary"
                 />
+              </div>
+
+              {/* Daily Study Goal setting */}
+              <div className="p-3 bg-muted/30 rounded-lg border border-border flex flex-col gap-2 select-none">
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0 pr-2">
+                    <h4 className="text-xs font-semibold">
+                      Daily Study Target
+                    </h4>
+                    <p className="text-[9px] text-muted-foreground mt-0.5">
+                      Required study watch time to maintain your daily streak.
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold text-primary shrink-0 tabular-nums">
+                    {Math.floor(dailyStudyGoal / 60) > 0 ? `${Math.floor(dailyStudyGoal / 60)}h ` : ""}{dailyStudyGoal % 60}m ({dailyStudyGoal} mins)
+                  </span>
+                </div>
+                <div className="flex items-center gap-4 mt-1">
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="number"
+                      min="0"
+                      max="23"
+                      value={Math.floor(dailyStudyGoal / 60)}
+                      onChange={(e) => {
+                        const h = Math.max(0, Math.min(23, parseInt(e.target.value, 10) || 0));
+                        const m = dailyStudyGoal % 60;
+                        setDailyStudyGoal(Math.max(1, h * 60 + m));
+                      }}
+                      className="h-8 text-center text-xs w-14 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    />
+                    <span className="text-[10px] text-muted-foreground font-semibold">hr</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="number"
+                      min="0"
+                      max="59"
+                      value={dailyStudyGoal % 60}
+                      onChange={(e) => {
+                        const m = Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0));
+                        const h = Math.floor(dailyStudyGoal / 60);
+                        setDailyStudyGoal(Math.max(1, Math.min(1439, h * 60 + m)));
+                      }}
+                      className="h-8 text-center text-xs w-14 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    />
+                    <span className="text-[10px] text-muted-foreground font-semibold">min</span>
+                  </div>
+                </div>
               </div>
             </div>
 
