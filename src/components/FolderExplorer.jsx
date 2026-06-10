@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { 
   Folder, 
   Plus, 
@@ -20,6 +20,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useContextMenu } from "../context/ContextMenuContext";
 import { open as openBrowser } from "@tauri-apps/api/shell";
+import StudyDashboard from "./StudyDashboard";
 
 export function FolderExplorer({
   folders,
@@ -33,8 +34,18 @@ export function FolderExplorer({
   openNewSubfolderModal,
   openImportModal,
   onSelectFolderEmoji,
+  studyStats,
+  dailyStudyGoal,
+  fetchStudyStats,
 }) {
   
+  // Fetch stats on mount / folder changes
+  useEffect(() => {
+    if (!selectedFolderId && fetchStudyStats) {
+      fetchStudyStats();
+    }
+  }, [selectedFolderId, fetchStudyStats]);
+
   // Format seconds to hours and minutes
   const formatDuration = (seconds) => {
     if (!seconds || seconds <= 0) return "0m";
@@ -365,15 +376,22 @@ export function FolderExplorer({
 
             {/* Time / Duration meta */}
             {stats.total_duration > 0 && (
-              <div className="flex items-center justify-between mt-1 text-[9px] text-muted-foreground/80 font-semibold">
-                <div className="flex items-center gap-1">
-                  <Clock size={10} className="flex-shrink-0" />
-                  <span>Duration: {formatDuration(stats.total_duration)}</span>
+              <div className="flex flex-col gap-1.5 mt-1 text-[9px] text-muted-foreground/80 font-semibold border-t border-border/20 pt-2 select-none">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1">
+                    <Clock size={10} className="flex-shrink-0" />
+                    <span>Duration: {formatDuration(stats.total_duration)}</span>
+                  </div>
+                  {stats.total_duration - (stats.completed_duration || 0) > 0 ? (
+                    <span>{formatDuration(stats.total_duration - (stats.completed_duration || 0))} left</span>
+                  ) : (
+                    <span className="text-emerald-500 font-bold">Completed</span>
+                  )}
                 </div>
-                {stats.total_duration - (stats.completed_duration || 0) > 0 ? (
-                  <span>{formatDuration(stats.total_duration - (stats.completed_duration || 0))} left</span>
-                ) : (
-                  <span className="text-emerald-500 font-bold">Completed</span>
+                {stats.total_study_time > 0 && (
+                  <div className="flex items-center gap-1 text-primary font-bold">
+                    <span>⏱️ Studied: {formatDuration(stats.total_study_time)}</span>
+                  </div>
                 )}
               </div>
             )}
@@ -481,6 +499,13 @@ export function FolderExplorer({
 
       {/* ───── 2. grids container ───── */}
       <div className="flex-grow p-6 flex flex-col gap-6 max-w-7xl w-full mx-auto">
+        {/* Render Study Dashboard at the Library Root */}
+        {!selectedFolderId && (
+          <StudyDashboard
+            studyStats={studyStats}
+            dailyStudyGoal={dailyStudyGoal}
+          />
+        )}
         {/* Render nested folders grid if any */}
         {foldersCount > 0 && (
           <div className="flex flex-col gap-3">
