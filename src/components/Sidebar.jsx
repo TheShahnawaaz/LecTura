@@ -18,7 +18,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useContextMenu } from "../context/ContextMenuContext";
 import { open as openBrowser } from "@tauri-apps/api/shell";
-
+import logoIcon from "../assets/logo.png";
 
 export function Sidebar({
   folders,
@@ -100,9 +100,11 @@ export function Sidebar({
         {!isCollapsed ? (
           <>
             <div className="flex items-center gap-2 min-w-0">
-              <div className="w-7 h-7 rounded-lg bg-primary text-primary-foreground flex items-center justify-center font-bold text-base flex-shrink-0 shadow-sm border border-border">
-                L
-              </div>
+              <img 
+                src={logoIcon} 
+                alt="LecTura Logo" 
+                className="w-7 h-7 rounded-lg flex-shrink-0 shadow-sm border border-border object-cover" 
+              />
               <div className="flex flex-col text-left leading-none min-w-0">
                 <span className="font-bold text-sm text-foreground truncate">
                   LecTura
@@ -133,9 +135,11 @@ export function Sidebar({
                 <ChevronRight size={16} />
               </div>
             ) : (
-              <div className="w-7 h-7 rounded-lg bg-primary text-primary-foreground flex items-center justify-center font-bold text-base shadow-sm border border-border transition-all duration-150">
-                L
-              </div>
+              <img 
+                src={logoIcon} 
+                alt="LecTura Logo" 
+                className="w-7 h-7 rounded-lg flex-shrink-0 shadow-sm border border-border transition-all duration-150 object-cover" 
+              />
             )}
           </div>
         )}
