@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/api/notification";
 import { Sidebar } from "./components/Sidebar";
 import { PlaylistDetail } from "./components/PlaylistDetail";
 import { FolderExplorer } from "./components/FolderExplorer";
@@ -40,6 +41,11 @@ import {
   FolderOpen,
   Play,
   Search,
+  Download,
+  Trash2,
+  RefreshCw,
+  XCircle,
+  Terminal,
 } from "lucide-react";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
@@ -77,6 +83,14 @@ function App() {
   const [isFolderOpen, setIsFolderOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // Download Manager States
+  const [isDownloadsOpen, setIsDownloadsOpen] = useState(false);
+  const [downloadQueue, setDownloadQueue] = useState([]);
+  const [downloadSpeedLimit, setDownloadSpeedLimit] = useState(() => {
+    return localStorage.getItem("lectura_download_speed_limit") || "unlimited";
+  });
+  const [activeLogVideo, setActiveLogVideo] = useState(null);
 
   // Deletion and picker dialog targets
   const [folderDeleteTarget, setFolderDeleteTarget] = useState(null); // folder object
@@ -180,10 +194,16 @@ function App() {
     fetchStudyStats();
     checkSystemStatus();
 
+    // Set initial speed limit in Rust
+    const initialLimit = localStorage.getItem("lectura_download_speed_limit") || "unlimited";
+    invoke("set_download_speed_limit", { limit: initialLimit === "unlimited" ? null : initialLimit }).catch(console.error);
+    fetchDownloadQueue().catch(console.error);
+
     // Listen to download progress events from Rust downloader
     const unlistenProgress = listen("download-progress", (event) => {
       if (!event || !event.payload) return;
       const payload = event.payload;
+      
       setVideos((prevVideos) =>
         prevVideos.map((v) => {
           if (v.id === payload.video_id) {
@@ -192,6 +212,7 @@ function App() {
               download_progress: payload.progress,
               download_status: payload.status,
               local_path: payload.local_path || v.local_path,
+              error_log: payload.error_log || v.error_log,
             };
           }
           return v;
@@ -205,13 +226,45 @@ function App() {
             download_progress: payload.progress,
             download_status: payload.status,
             local_path: payload.local_path || prev.local_path,
+            error_log: payload.error_log || prev.error_log,
           };
         }
         return prev;
       });
 
-      if (payload.status === "completed") {
+      // Update background downloads queue
+      setDownloadQueue((prevQueue) => {
+        if (payload.status === "completed" || payload.status === "none") {
+          return prevQueue.filter((item) => item.id !== payload.video_id);
+        }
+        const exists = prevQueue.some((item) => item.id === payload.video_id);
+        if (exists) {
+          return prevQueue.map((item) =>
+            item.id === payload.video_id
+              ? {
+                  ...item,
+                  download_status: payload.status,
+                  download_progress: payload.progress,
+                  speed: payload.speed || "",
+                  eta: payload.eta || "",
+                  size: payload.size || "",
+                  error_log: payload.error_log || item.error_log,
+                }
+              : item
+          );
+        } else {
+          fetchDownloadQueue();
+          return prevQueue;
+        }
+      });
+
+      if (payload.status === "completed" || payload.status === "failed" || payload.status === "none") {
         fetchLibraryStats();
+        if (payload.status === "completed") {
+          triggerNotification("Download Completed", `'${payload.video_title || "Video"}' is now available offline.`);
+        } else if (payload.status === "failed") {
+          triggerNotification("Download Failed", `Failed to download '${payload.video_title || "Video"}'. See manager logs.`);
+        }
       }
     });
 
@@ -268,6 +321,41 @@ function App() {
       setPlaylists(data);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const triggerNotification = async (title, body) => {
+    try {
+      let permissionGranted = await isPermissionGranted();
+      if (!permissionGranted) {
+        const permission = await requestPermission();
+        permissionGranted = permission === "granted";
+      }
+      if (permissionGranted) {
+        sendNotification({ title, body });
+      }
+    } catch (err) {
+      console.error("Failed to trigger notification:", err);
+    }
+  };
+
+  const fetchDownloadQueue = async () => {
+    try {
+      const data = await invoke("get_download_queue");
+      setDownloadQueue(data || []);
+    } catch (err) {
+      console.error("Failed to fetch download queue:", err);
+    }
+  };
+
+  const handleSetSpeedLimit = async (limit) => {
+    try {
+      setDownloadSpeedLimit(limit);
+      localStorage.setItem("lectura_download_speed_limit", limit);
+      const rustLimit = limit === "unlimited" ? null : limit;
+      await invoke("set_download_speed_limit", { limit: rustLimit });
+    } catch (err) {
+      console.error("Failed to set download speed limit:", err);
     }
   };
 
@@ -970,6 +1058,24 @@ function App() {
                 )}
               </button>
 
+              {/* Downloads Queue Button */}
+              <button
+                onClick={() => {
+                  fetchDownloadQueue();
+                  setIsDownloadsOpen(true);
+                }}
+                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors border border-border cursor-pointer relative"
+                title="Download Manager"
+              >
+                <Download size={18} />
+                {downloadQueue.some((v) => v.download_status === "downloading" || v.download_status === "pending") && (
+                  <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-primary" />
+                  </span>
+                )}
+              </button>
+
               {/* Settings Button */}
               <button
                 onClick={() => {
@@ -1373,6 +1479,240 @@ function App() {
         />
       )}
 
+      {/* ───── DOWNLOADS MANAGER DIALOG ───── */}
+      <Dialog open={isDownloadsOpen} onOpenChange={setIsDownloadsOpen}>
+        <DialogContent className="bg-card border-border text-foreground max-w-lg sm:max-w-lg overflow-hidden flex flex-col max-h-[85vh]">
+          <DialogHeader className="pb-2 border-b border-border">
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle className="text-sm font-semibold tracking-wide uppercase flex items-center gap-2">
+                  <Download size={15} className="text-primary animate-pulse" />
+                  Background Downloads Queue
+                </DialogTitle>
+                <DialogDescription className="text-muted-foreground text-xs mt-1">
+                  Monitor active video lectures downloading in the background. Enforces 2 max concurrent downloads.
+                </DialogDescription>
+              </div>
+              
+              {/* Throttling Dropdown */}
+              <div className="flex items-center gap-1.5 shrink-0 bg-muted/50 border border-border px-2 py-1 rounded-lg">
+                <span className="text-[10px] text-muted-foreground font-semibold">Speed Limit:</span>
+                <select
+                  value={downloadSpeedLimit}
+                  onChange={(e) => handleSetSpeedLimit(e.target.value)}
+                  className="bg-transparent text-[10px] font-bold text-primary focus:outline-none cursor-pointer border-none outline-none pr-1"
+                >
+                  <option value="unlimited" className="bg-card text-foreground">Unlimited</option>
+                  <option value="500K" className="bg-card text-foreground">500 KB/s</option>
+                  <option value="1M" className="bg-card text-foreground">1 MB/s</option>
+                  <option value="2M" className="bg-card text-foreground">2 MB/s</option>
+                  <option value="5M" className="bg-card text-foreground">5 MB/s</option>
+                </select>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {/* Queue List Container */}
+          <div className="flex-1 overflow-y-auto py-2 flex flex-col gap-2 min-h-0">
+            {downloadQueue.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center select-none">
+                <Download size={32} className="text-muted-foreground/35 mb-2.5 stroke-[1.5]" />
+                <p className="text-xs font-semibold text-muted-foreground/85">No Active Downloads</p>
+                <p className="text-[10px] text-muted-foreground/60 mt-1 max-w-[240px]">
+                  Go to any course page and click "Download Lecture" or "Download All" to download videos for offline playback.
+                </p>
+              </div>
+            ) : (
+              downloadQueue.map((video) => {
+                const isDownloading = video.download_status === "downloading";
+                const isPending = video.download_status === "pending";
+                const isFailed = video.download_status === "failed";
+                
+                return (
+                  <div 
+                    key={video.id} 
+                    className="p-3 bg-muted/20 border border-border/60 hover:border-border rounded-xl flex items-center gap-3 transition-all duration-200"
+                  >
+                    {/* Thumbnail */}
+                    {video.thumbnail_url ? (
+                      <img 
+                        src={video.thumbnail_url} 
+                        alt="" 
+                        className="w-16 h-10 object-cover rounded-lg border border-border/30 bg-muted shrink-0" 
+                      />
+                    ) : (
+                      <div className="w-16 h-10 rounded-lg border border-border/30 bg-muted shrink-0 flex items-center justify-center">
+                        <Play size={14} className="text-muted-foreground/50" />
+                      </div>
+                    )}
+
+                    {/* Progress Info */}
+                    <div className="flex-1 min-w-0 flex flex-col gap-1">
+                      <div className="flex justify-between items-start gap-2">
+                        <h4 className="text-xs font-semibold truncate text-foreground pr-2" title={video.title}>
+                          {video.title}
+                        </h4>
+                        
+                        {/* Status Badge */}
+                        <Badge
+                          variant="outline"
+                          className={`text-[8px] font-extrabold tracking-wide uppercase px-1 py-0.5 rounded shrink-0 leading-none select-none ${
+                            isDownloading 
+                              ? "border-primary/20 bg-primary/10 text-primary animate-pulse" 
+                              : isPending 
+                              ? "border-amber-500/20 bg-amber-500/10 text-amber-500" 
+                              : "border-destructive/20 bg-destructive/10 text-destructive"
+                          }`}
+                        >
+                          {video.download_status}
+                        </Badge>
+                      </div>
+
+                      {/* Diagnostic details row */}
+                      {isDownloading && (
+                        <div className="flex items-center gap-2 text-[9px] text-muted-foreground/80 tabular-nums">
+                          {video.size && <span>{video.size}</span>}
+                          {video.speed && (
+                            <>
+                              <span className="text-muted-foreground/30">•</span>
+                              <span className="text-primary font-bold">{video.speed}</span>
+                            </>
+                          )}
+                          {video.eta && (
+                            <>
+                              <span className="text-muted-foreground/30">•</span>
+                              <span>ETA {video.eta}</span>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Progress Bar or Pending Indicator */}
+                      <div className="mt-1 flex items-center gap-3">
+                        <div className="flex-1 h-1.5 bg-muted/65 border border-border/20 rounded-full overflow-hidden relative">
+                          <div 
+                            className={`h-full rounded-full transition-all duration-300 ${
+                              isFailed 
+                                ? "bg-destructive/80" 
+                                : isPending
+                                ? "bg-amber-500/30 w-full animate-pulse"
+                                : "bg-gradient-to-r from-primary to-emerald-500"
+                            }`}
+                            style={{ width: isPending ? "100%" : `${video.download_progress}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] font-bold text-foreground shrink-0 w-8 text-right tabular-nums">
+                          {isPending ? "Pending" : `${video.download_progress}%`}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-1.5 shrink-0 pl-1">
+                      {isFailed && (
+                        <>
+                          {/* Inspect Logs */}
+                          <button
+                            onClick={() => setActiveLogVideo(video)}
+                            className="p-1.5 rounded-lg border border-border hover:border-border/80 text-muted-foreground hover:text-foreground bg-muted/20 hover:bg-muted/60 transition-colors cursor-pointer"
+                            title="Inspect Error Logs"
+                          >
+                            <Terminal size={12} />
+                          </button>
+
+                          {/* Retry */}
+                          <button
+                            onClick={() => invoke("download_video", { videoId: video.id })}
+                            className="p-1.5 rounded-lg border border-primary/20 hover:border-primary/40 text-primary bg-primary/5 hover:bg-primary/15 transition-colors cursor-pointer"
+                            title="Retry Download"
+                          >
+                            <RefreshCw size={12} />
+                          </button>
+
+                          {/* Clear */}
+                          <button
+                            onClick={() => invoke("clear_failed_download", { videoId: video.id }).then(fetchDownloadQueue)}
+                            className="p-1.5 rounded-lg border border-border hover:border-border/80 text-muted-foreground hover:text-destructive hover:bg-destructive/5 transition-colors cursor-pointer"
+                            title="Remove from List"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </>
+                      )}
+
+                      {(isDownloading || isPending) && (
+                        <button
+                          onClick={() => invoke("cancel_download", { videoId: video.id })}
+                          className="p-1.5 rounded-lg border border-border hover:border-destructive/30 text-muted-foreground hover:text-destructive hover:bg-destructive/5 transition-colors cursor-pointer"
+                          title="Cancel Download"
+                        >
+                          <XCircle size={12} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ───── DIAGNOSTIC ERROR LOG PANEL (SUB-DIALOG) ───── */}
+      <Dialog open={!!activeLogVideo} onOpenChange={(open) => !open && setActiveLogVideo(null)}>
+        <DialogContent className="bg-card border-border text-foreground max-w-2xl sm:max-w-2xl overflow-hidden flex flex-col max-h-[75vh]">
+          <DialogHeader className="pb-2 border-b border-border">
+            <DialogTitle className="text-sm font-semibold tracking-wide uppercase flex items-center gap-2">
+              <Terminal size={15} className="text-destructive" />
+              Download Diagnostics & Logs
+            </DialogTitle>
+            <DialogDescription className="text-muted-foreground text-xs mt-1">
+              Inspection trace logs for: <strong className="text-foreground">{activeLogVideo?.title}</strong>
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Logs Terminal */}
+          <div className="flex-1 overflow-y-auto bg-zinc-950 border border-zinc-900 rounded-xl p-3.5 font-mono text-[10px] text-zinc-300 min-h-0 flex flex-col max-h-[45vh] relative select-text">
+            {activeLogVideo?.error_log ? (
+              <pre className="whitespace-pre-wrap break-all leading-relaxed">{activeLogVideo.error_log}</pre>
+            ) : (
+              <p className="text-zinc-500 italic">No execution trace logs captured for this failure.</p>
+            )}
+          </div>
+
+          <DialogHeader className="pt-2 border-t border-border flex flex-row items-center justify-between gap-4">
+            <span className="text-[10px] text-muted-foreground leading-relaxed max-w-[70%]">
+              <strong>Tip:</strong> Network disconnections, SSL issues, or restriction blocks from YouTube are common causes of failure.
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-[11px] px-3.5 border-border bg-muted/20 hover:bg-muted/65"
+                onClick={() => {
+                  navigator.clipboard.writeText(activeLogVideo?.error_log || "");
+                  alert("Diagnostics logs copied to clipboard!");
+                }}
+                disabled={!activeLogVideo?.error_log}
+              >
+                Copy Logs
+              </Button>
+              <Button
+                size="sm"
+                className="h-8 text-[11px] px-4 bg-primary text-primary-foreground hover:bg-primary/80"
+                onClick={() => {
+                  const id = activeLogVideo.id;
+                  setActiveLogVideo(null);
+                  invoke("download_video", { videoId: id });
+                }}
+              >
+                Retry Download
+              </Button>
+            </div>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
+      
       {/* ───── EMOJI PICKER DIALOG ───── */}
       {emojiPickerTarget && (
         <EmojiPickerModal

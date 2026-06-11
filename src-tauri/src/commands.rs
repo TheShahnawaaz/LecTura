@@ -9,6 +9,7 @@ use std::sync::Mutex;
 pub struct ActiveDownloads {
     pub map: Mutex<HashMap<String, CommandChild>>,
     pub active_playlists: Mutex<HashSet<String>>,
+    pub speed_limit: Mutex<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -48,6 +49,8 @@ pub struct Video {
     pub created_at: String,
     #[serde(default)]
     pub study_time: Option<i32>,
+    #[serde(default)]
+    pub error_log: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -316,7 +319,8 @@ pub fn get_playlist_videos(pool: State<'_, DbPool>, playlist_id: String) -> Resu
     let conn = pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed, created_at,
-                (SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE video_id = videos.id) as study_time
+                (SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE video_id = videos.id) as study_time,
+                error_log
          FROM videos WHERE playlist_id = ?1 ORDER BY created_at ASC"
     ).map_err(|e| e.to_string())?;
     
@@ -337,6 +341,7 @@ pub fn get_playlist_videos(pool: State<'_, DbPool>, playlist_id: String) -> Resu
             is_completed: is_completed_val != 0,
             created_at: row.get(11)?,
             study_time: Some(study_time_val),
+            error_log: row.get(13)?,
         })
     }).map_err(|e| e.to_string())?;
     
@@ -849,25 +854,50 @@ pub fn download_ffmpeg(app_handle: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_progress(line: &str) -> Option<f32> {
-    if line.contains("[download]") && line.contains('%') {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        for part in parts {
-            if part.ends_with('%') {
-                if let Ok(pct) = part.trim_end_matches('%').parse::<f32>() {
-                    return Some(pct);
+fn parse_progress(line: &str) -> Option<(f32, String, String, String)> {
+    if !line.contains("[download]") || !line.contains('%') {
+        return None;
+    }
+    
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let mut percent: f32 = 0.0;
+    let mut size = String::new();
+    let mut speed = String::new();
+    let mut eta = String::new();
+    
+    for (i, &part) in parts.iter().enumerate() {
+        if part.ends_with('%') {
+            percent = part.trim_end_matches('%').parse::<f32>().unwrap_or(0.0);
+            
+            if i + 2 < parts.len() && parts[i + 1] == "of" {
+                size = parts[i + 2].to_string();
+            }
+            if i + 4 < parts.len() && parts[i + 3] == "at" {
+                speed = parts[i + 4].to_string();
+            }
+            
+            if let Some(eta_idx) = parts.iter().position(|&x| x == "ETA") {
+                if eta_idx + 1 < parts.len() {
+                    eta = parts[eta_idx + 1].to_string();
                 }
             }
+            break;
         }
     }
-    None
+    
+    if percent > 0.0 || line.contains("100%") {
+        Some((percent, size, speed, eta))
+    } else {
+        None
+    }
 }
 
 async fn download_video_inner(
     app_handle: tauri::AppHandle, 
     pool: DbPool, 
     video_id: String, 
-    url: String
+    url: String,
+    speed_limit: Option<String>,
 ) -> Result<(), String> {
     let active_downloads = app_handle.state::<ActiveDownloads>();
     let app_dir = app_handle.path_resolver().app_data_dir().ok_or("No app data directory")?;
@@ -894,14 +924,30 @@ async fn download_video_inner(
         }
     }
 
+    if let Some(ref limit) = speed_limit {
+        if limit != "unlimited" && !limit.is_empty() {
+            args.push("--limit-rate".to_string());
+            args.push(limit.clone());
+        }
+    }
+
     args.push("-o".to_string());
     args.push(output_path.to_str().ok_or("Invalid output path")?.to_string());
     args.push(url);
 
+    let video_title = {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT title FROM videos WHERE id = ?1",
+            [&video_id],
+            |row| row.get::<_, String>(0)
+        ).unwrap_or_else(|_| "Video".to_string())
+    };
+
     {
         let conn = pool.get().map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE videos SET download_status = 'downloading', download_progress = 0 WHERE id = ?1",
+            "UPDATE videos SET download_status = 'downloading', download_progress = 0, error_log = NULL WHERE id = ?1",
             [&video_id],
         ).map_err(|e| e.to_string())?;
     }
@@ -909,7 +955,10 @@ async fn download_video_inner(
     let _ = app_handle.emit_all("download-progress", serde_json::json!({
         "video_id": video_id,
         "progress": 0,
-        "status": "downloading"
+        "status": "downloading",
+        "speed": "",
+        "eta": "",
+        "size": ""
     }));
     
     let (mut rx, child) = Command::new_sidecar("yt-dlp")
@@ -925,11 +974,17 @@ async fn download_video_inner(
     }
     
     let mut success = false;
+    let mut log_lines = Vec::<String>::new();
     
     while let Some(event) = rx.recv().await {
         match event {
             CommandEvent::Stdout(line) => {
-                if let Some(pct) = parse_progress(&line) {
+                if log_lines.len() >= 100 {
+                    log_lines.remove(0);
+                }
+                log_lines.push(format!("[OUT] {}", line));
+
+                if let Some((pct, size, speed, eta)) = parse_progress(&line) {
                     let progress_val = pct as i32;
                     let _ = pool.get().map(|conn| {
                         let _ = conn.execute(
@@ -941,13 +996,27 @@ async fn download_video_inner(
                     let _ = app_handle.emit_all("download-progress", serde_json::json!({
                         "video_id": video_id,
                         "progress": progress_val,
-                        "status": "downloading"
+                        "status": "downloading",
+                        "speed": speed,
+                        "eta": eta,
+                        "size": size
                     }));
                 }
+            }
+            CommandEvent::Stderr(line) => {
+                if log_lines.len() >= 100 {
+                    log_lines.remove(0);
+                }
+                log_lines.push(format!("[ERR] {}", line));
             }
             CommandEvent::Terminated(payload) => {
                 if payload.code == Some(0) {
                     success = true;
+                } else {
+                    if log_lines.len() >= 100 {
+                        log_lines.remove(0);
+                    }
+                    log_lines.push(format!("[EXIT] Terminated with code {:?}", payload.code));
                 }
             }
             _ => {}
@@ -965,7 +1034,7 @@ async fn download_video_inner(
         {
             let conn = pool.get().map_err(|e| e.to_string())?;
             conn.execute(
-                "UPDATE videos SET download_status = 'completed', download_progress = 100, local_path = ?1 WHERE id = ?2",
+                "UPDATE videos SET download_status = 'completed', download_progress = 100, local_path = ?1, error_log = NULL WHERE id = ?2",
                 (local_path_str, &video_id),
             ).map_err(|e| e.to_string())?;
         }
@@ -973,23 +1042,108 @@ async fn download_video_inner(
             "video_id": video_id,
             "progress": 100,
             "status": "completed",
-            "local_path": local_path_str
+            "local_path": local_path_str,
+            "video_title": video_title
         }));
+
         Ok(())
     } else {
+        let full_error_log = log_lines.join("\n");
         {
             let conn = pool.get().map_err(|e| e.to_string())?;
             conn.execute(
-                "UPDATE videos SET download_status = 'failed' WHERE id = ?1",
-                [&video_id],
+                "UPDATE videos SET download_status = 'failed', error_log = ?1 WHERE id = ?2",
+                (&full_error_log, &video_id),
             ).map_err(|e| e.to_string())?;
         }
         let _ = app_handle.emit_all("download-progress", serde_json::json!({
             "video_id": video_id,
             "progress": 0,
-            "status": "failed"
+            "status": "failed",
+            "error_log": full_error_log,
+            "video_title": video_title
         }));
+
         Err("yt-dlp failed to download video".to_string())
+    }
+}
+
+pub fn trigger_queue_processing(app_handle: tauri::AppHandle, pool: DbPool) {
+    let active_downloads = app_handle.state::<ActiveDownloads>();
+    
+    // Count currently executing downloads (status is 'downloading')
+    let active_count = {
+        let map = active_downloads.map.lock().unwrap();
+        map.len()
+    };
+    
+    if active_count >= 2 {
+        return;
+    }
+    
+    let slots_available = 2 - active_count;
+    if slots_available <= 0 {
+        return;
+    }
+    
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    
+    let mut stmt = match conn.prepare(
+        "SELECT id, url FROM videos WHERE download_status = 'pending' ORDER BY created_at ASC LIMIT ?1"
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    
+    let rows = match stmt.query_map([slots_available], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    
+    let mut pending_videos = Vec::new();
+    for row in rows {
+        if let Ok(item) = row {
+            pending_videos.push(item);
+        }
+    }
+    
+    for (video_id, url) in pending_videos {
+        // Set to downloading immediately
+        if conn.execute(
+            "UPDATE videos SET download_status = 'downloading', download_progress = 0, error_log = NULL WHERE id = ?1",
+            [&video_id],
+        ).is_err() {
+            continue;
+        }
+        
+        let app_handle_clone = app_handle.clone();
+        let pool_clone = pool.clone();
+        let video_id_clone = video_id.clone();
+        let url_clone = url.clone();
+        
+        tauri::async_runtime::spawn(async move {
+            let speed_limit = {
+                let state = app_handle_clone.state::<ActiveDownloads>();
+                let limit = state.speed_limit.lock().unwrap();
+                limit.clone()
+            };
+            
+            let _ = download_video_inner(
+                app_handle_clone.clone(),
+                pool_clone.clone(),
+                video_id_clone,
+                url_clone,
+                speed_limit,
+            ).await;
+            
+            // Recurse to run next pending
+            trigger_queue_processing(app_handle_clone, pool_clone);
+        });
     }
 }
 
@@ -997,53 +1151,32 @@ async fn download_video_inner(
 pub fn download_playlist(
     app_handle: tauri::AppHandle, 
     pool: State<'_, DbPool>, 
-    active_downloads: State<'_, ActiveDownloads>,
+    _active_downloads: State<'_, ActiveDownloads>,
     playlist_id: String
 ) -> Result<(), String> {
     let pool_clone = pool.inner().clone();
     
     let conn = pool_clone.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, url, download_status FROM videos WHERE playlist_id = ?1").map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([&playlist_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-    }).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE videos SET download_status = 'pending', download_progress = 0, error_log = NULL 
+         WHERE playlist_id = ?1 AND download_status != 'completed'",
+        [&playlist_id],
+    ).map_err(|e| e.to_string())?;
     
-    let mut videos_to_download = Vec::new();
+    // Find all videos that were set to pending so we can broadcast their initial status to frontend
+    let mut stmt = conn.prepare("SELECT id FROM videos WHERE playlist_id = ?1 AND download_status = 'pending'").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([&playlist_id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
     for row in rows {
-        let (id, url, status) = row.map_err(|e| e.to_string())?;
-        if status != "completed" {
-            videos_to_download.push((id, url));
+        if let Ok(video_id) = row {
+            let _ = app_handle.emit_all("download-progress", serde_json::json!({
+                "video_id": video_id,
+                "progress": 0,
+                "status": "pending"
+            }));
         }
     }
-    
-    // Mark playlist as active
-    {
-        let mut active = active_downloads.active_playlists.lock().unwrap();
-        active.insert(playlist_id.clone());
-    }
-    
-    let playlist_id_clone = playlist_id.clone();
-    let app_handle_clone = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        let active_downloads_state = app_handle_clone.state::<ActiveDownloads>();
-        for (video_id, url) in videos_to_download {
-            // Check if playlist download has been cancelled
-            {
-                let active = active_downloads_state.active_playlists.lock().unwrap();
-                if !active.contains(&playlist_id_clone) {
-                    break;
-                }
-            }
-            let _ = download_video_inner(app_handle_clone.clone(), pool_clone.clone(), video_id, url).await;
-        }
-        
-        // Remove from active playlists when done
-        {
-            let mut active = active_downloads_state.active_playlists.lock().unwrap();
-            active.remove(&playlist_id_clone);
-        }
-    });
-    
+
+    trigger_queue_processing(app_handle, pool_clone);
     Ok(())
 }
 
@@ -1057,13 +1190,18 @@ pub fn download_video(
     let pool_clone = pool.inner().clone();
     
     let conn = pool_clone.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT url FROM videos WHERE id = ?1").map_err(|e| e.to_string())?;
-    let url: String = stmt.query_row([&video_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE videos SET download_status = 'pending', download_progress = 0, error_log = NULL WHERE id = ?1",
+        [&video_id],
+    ).map_err(|e| e.to_string())?;
     
-    tauri::async_runtime::spawn(async move {
-        let _ = download_video_inner(app_handle, pool_clone, video_id, url).await;
-    });
-    
+    let _ = app_handle.emit_all("download-progress", serde_json::json!({
+        "video_id": video_id,
+        "progress": 0,
+        "status": "pending"
+    }));
+
+    trigger_queue_processing(app_handle, pool_clone);
     Ok(())
 }
 
@@ -1074,6 +1212,8 @@ pub fn cancel_download(
     active_downloads: State<'_, ActiveDownloads>,
     video_id: String,
 ) -> Result<(), String> {
+    let pool_clone = pool.inner().clone();
+
     // 1. Terminate the child process if running
     {
         let mut map = active_downloads.map.lock().unwrap();
@@ -1083,9 +1223,9 @@ pub fn cancel_download(
     }
     
     // 2. Reset database state
-    let conn = pool.get().map_err(|e| e.to_string())?;
+    let conn = pool_clone.get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE videos SET download_status = 'none', download_progress = 0 WHERE id = ?1",
+        "UPDATE videos SET download_status = 'none', download_progress = 0, error_log = NULL WHERE id = ?1",
         [&video_id],
     ).map_err(|e| e.to_string())?;
     
@@ -1095,7 +1235,9 @@ pub fn cancel_download(
         "progress": 0,
         "status": "none"
     }));
-    
+
+    // Trigger next queue item
+    trigger_queue_processing(app_handle, pool_clone);
     Ok(())
 }
 
@@ -1106,14 +1248,10 @@ pub fn cancel_playlist_download(
     active_downloads: State<'_, ActiveDownloads>,
     playlist_id: String,
 ) -> Result<(), String> {
-    // 1. Cancel the sequential playlist loop
-    {
-        let mut active = active_downloads.active_playlists.lock().unwrap();
-        active.remove(&playlist_id);
-    }
-    
-    // 2. Find all videos in this playlist
-    let conn = pool.get().map_err(|e| e.to_string())?;
+    let pool_clone = pool.inner().clone();
+
+    // 1. Find all videos in this playlist
+    let conn = pool_clone.get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare("SELECT id FROM videos WHERE playlist_id = ?1").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&playlist_id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
     
@@ -1122,7 +1260,7 @@ pub fn cancel_playlist_download(
         video_ids.push(row.map_err(|e| e.to_string())?);
     }
     
-    // 3. Kill active child processes and reset DB state for all videos
+    // 2. Kill active child processes and reset DB state for all videos
     {
         let mut map = active_downloads.map.lock().unwrap();
         for video_id in video_ids {
@@ -1131,7 +1269,8 @@ pub fn cancel_playlist_download(
             }
             
             let _ = conn.execute(
-                "UPDATE videos SET download_status = 'none', download_progress = 0 WHERE id = ?1 AND download_status IN ('downloading', 'pending')",
+                "UPDATE videos SET download_status = 'none', download_progress = 0, error_log = NULL 
+                 WHERE id = ?1 AND download_status IN ('downloading', 'pending')",
                 [&video_id],
             );
             
@@ -1143,6 +1282,8 @@ pub fn cancel_playlist_download(
         }
     }
     
+    // Trigger next queue items
+    trigger_queue_processing(app_handle, pool_clone);
     Ok(())
 }
 
@@ -1170,4 +1311,65 @@ pub fn import_playlist(url: String) -> Result<String, String> {
     } else {
         Ok(output)
     }
+}
+
+#[tauri::command]
+pub fn get_download_queue(pool: State<'_, DbPool>) -> Result<Vec<Video>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed, created_at,
+                (SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE video_id = videos.id) as study_time,
+                error_log
+         FROM videos 
+         WHERE download_status IN ('pending', 'downloading', 'failed')
+         ORDER BY CASE download_status 
+             WHEN 'downloading' THEN 1 
+             WHEN 'pending' THEN 2 
+             WHEN 'failed' THEN 3 
+             ELSE 4 END, created_at DESC"
+    ).map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map([], |row| {
+        let is_completed_val: i32 = row.get(10)?;
+        let study_time_val: i32 = row.get(12)?;
+        Ok(Video {
+            id: row.get(0)?,
+            playlist_id: row.get(1)?,
+            title: row.get(2)?,
+            duration: row.get(3)?,
+            thumbnail_url: row.get(4)?,
+            url: row.get(5)?,
+            local_path: row.get(6)?,
+            download_status: row.get(7)?,
+            download_progress: row.get(8)?,
+            watched_progress: row.get(9)?,
+            is_completed: is_completed_val != 0,
+            created_at: row.get(11)?,
+            study_time: Some(study_time_val),
+            error_log: row.get(13)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn clear_failed_download(pool: State<'_, DbPool>, video_id: String) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE videos SET download_status = 'none', download_progress = 0, error_log = NULL WHERE id = ?1",
+        [&video_id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_download_speed_limit(active_downloads: State<'_, ActiveDownloads>, limit: Option<String>) -> Result<(), String> {
+    let mut limit_val = active_downloads.speed_limit.lock().unwrap();
+    *limit_val = limit;
+    Ok(())
 }
