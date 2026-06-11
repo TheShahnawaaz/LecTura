@@ -24,6 +24,7 @@ fn main() {
             let active_downloads = commands::ActiveDownloads {
                 map: std::sync::Mutex::new(std::collections::HashMap::new()),
                 active_playlists: std::sync::Mutex::new(std::collections::HashSet::new()),
+                speed_limit: std::sync::Mutex::new(None),
             };
             app.manage(active_downloads);
             
@@ -59,6 +60,9 @@ fn main() {
             commands::update_folder_emoji,
             commands::log_study_time,
             commands::get_study_stats,
+            commands::get_download_queue,
+            commands::clear_failed_download,
+            commands::set_download_speed_limit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

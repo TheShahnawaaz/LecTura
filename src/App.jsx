@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
-import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/api/notification";
+
 import { Sidebar } from "./components/Sidebar";
 import { PlaylistDetail } from "./components/PlaylistDetail";
 import { FolderExplorer } from "./components/FolderExplorer";
@@ -46,6 +46,7 @@ import {
   RefreshCw,
   XCircle,
   Terminal,
+
 } from "lucide-react";
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
@@ -124,6 +125,7 @@ function App() {
   useEffect(() => {
     localStorage.setItem("lectura_remember_speed", rememberSpeed);
   }, [rememberSpeed]);
+
 
   // Daily Study Goal Preference (in minutes, default 30)
   const [dailyStudyGoal, setDailyStudyGoal] = useState(() => {
@@ -260,11 +262,6 @@ function App() {
 
       if (payload.status === "completed" || payload.status === "failed" || payload.status === "none") {
         fetchLibraryStats();
-        if (payload.status === "completed") {
-          triggerNotification("Download Completed", `'${payload.video_title || "Video"}' is now available offline.`);
-        } else if (payload.status === "failed") {
-          triggerNotification("Download Failed", `Failed to download '${payload.video_title || "Video"}'. See manager logs.`);
-        }
       }
     });
 
@@ -324,20 +321,6 @@ function App() {
     }
   };
 
-  const triggerNotification = async (title, body) => {
-    try {
-      let permissionGranted = await isPermissionGranted();
-      if (!permissionGranted) {
-        const permission = await requestPermission();
-        permissionGranted = permission === "granted";
-      }
-      if (permissionGranted) {
-        sendNotification({ title, body });
-      }
-    } catch (err) {
-      console.error("Failed to trigger notification:", err);
-    }
-  };
 
   const fetchDownloadQueue = async () => {
     try {

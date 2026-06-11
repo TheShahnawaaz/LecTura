@@ -77,6 +77,10 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_study_logs_video_id ON study_logs (video_id);
     CREATE INDEX IF NOT EXISTS idx_study_logs_created_at ON study_logs (created_at);
     "#,
+    // Version 6: Add error_log column to videos table for storing detailed yt-dlp traceback logs
+    r#"
+    ALTER TABLE videos ADD COLUMN error_log TEXT;
+    "#,
 ];
 
 pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> {

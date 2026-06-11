@@ -25,9 +25,6 @@
         "all": true,
         "scope": ["$APPDIR/**", "$APPDATA/**"]
       },
-      "notification": {
-        "all": true
-      },
       "protocol": {
         "asset": true,
         "assetScope": ["$APPDIR/**", "$APPDATA/**"]
