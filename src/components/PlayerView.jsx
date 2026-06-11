@@ -30,6 +30,8 @@ export function PlayerView({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSpeedHUD, setShowSpeedHUD] = useState(false);
   const [iframeLoaded, setIframeLoaded] = useState(0);
+  const [showTitleOverlay, setShowTitleOverlay] = useState(false);
+  const titleOverlayTimerRef = useRef(null);
 
   // Autoplay preferences (stored in localStorage)
   const [autoplayEnabled, setAutoplayEnabled] = useState(() => {
@@ -181,6 +183,31 @@ export function PlayerView({
       }
     }
   }, [isOffline, playbackSpeed, setPlaybackSpeed]);
+
+  // --- Fullscreen Offline Title Overlay ---
+  const handleMouseMove = () => {
+    if (!isFullscreen || !isOffline) return;
+    setShowTitleOverlay(true);
+    if (titleOverlayTimerRef.current) clearTimeout(titleOverlayTimerRef.current);
+    titleOverlayTimerRef.current = setTimeout(() => {
+      setShowTitleOverlay(false);
+    }, 3000);
+  };
+
+  useEffect(() => {
+    if (isFullscreen && isOffline) {
+      setShowTitleOverlay(true);
+      if (titleOverlayTimerRef.current) clearTimeout(titleOverlayTimerRef.current);
+      titleOverlayTimerRef.current = setTimeout(() => {
+        setShowTitleOverlay(false);
+      }, 3000);
+    } else {
+      setShowTitleOverlay(false);
+    }
+    return () => {
+      if (titleOverlayTimerRef.current) clearTimeout(titleOverlayTimerRef.current);
+    };
+  }, [isFullscreen, isOffline, activeVideo?.id]);
 
 
 
@@ -627,6 +654,7 @@ export function PlayerView({
   const playerMarkup = (
     <div 
       ref={containerRef}
+      onMouseMove={handleMouseMove}
       className={
         isFullscreen 
           ? "fixed inset-0 z-[9999] bg-black w-screen h-screen flex items-center justify-center rounded-none" 
@@ -702,6 +730,20 @@ export function PlayerView({
           <Sliders size={13} className="text-white/70" />
           <span className="text-white font-bold text-sm tabular-nums tracking-tight">
             {playbackSpeed}×
+          </span>
+        </div>
+      )}
+
+      {/* Fullscreen Video Title Overlay (Offline Only) */}
+      {isFullscreen && isOffline && (
+        <div
+          className={`absolute top-5 left-16 z-[10001] max-w-[85%] md:max-w-[60%] px-4 py-2.5 rounded-xl bg-black/75 border border-white/10 backdrop-blur-md shadow-2xl transition-all duration-300 pointer-events-none select-none flex items-center gap-2 ${
+            showTitleOverlay ? "opacity-100 translate-y-0 scale-100" : "opacity-0 -translate-y-2 scale-95"
+          }`}
+        >
+          <WifiOff size={13} className="text-emerald-400 shrink-0" />
+          <span className="text-white font-semibold text-xs md:text-sm truncate leading-none">
+            {activeVideo.title}
           </span>
         </div>
       )}
