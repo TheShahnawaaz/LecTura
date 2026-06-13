@@ -81,6 +81,9 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE videos ADD COLUMN error_log TEXT;
     "#,
+    // Version 7: placeholder — actual migration handled programmatically in run_migrations
+    // to safely add notes, screenshot_path, and is_doubt columns one at a time.
+    r#""#,
 ];
 
 pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> {
@@ -110,6 +113,14 @@ fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
     for (i, migration) in MIGRATIONS.iter().enumerate() {
         let migration_version = (i + 1) as i32;
         if current_version < migration_version {
+            // Version 7 is handled programmatically below — skip the empty placeholder SQL.
+            if migration_version == 7 {
+                conn.pragma_update(None, "user_version", migration_version)?;
+                current_version = migration_version;
+                println!("Database migrated to version {} (programmatic)", migration_version);
+                continue;
+            }
+
             let tx = conn.transaction()?;
             tx.execute_batch(migration)?;
             tx.pragma_update(None, "user_version", migration_version)?;
@@ -117,6 +128,35 @@ fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
             current_version = migration_version;
             println!("Database migrated to version {}", migration_version);
         }
+    }
+
+    // Ensure bookmark columns exist regardless of migration state.
+    // This safely handles databases that partially applied the old batched migration.
+    add_column_if_missing(conn, "bookmarks", "notes", "TEXT")?;
+    add_column_if_missing(conn, "bookmarks", "screenshot_path", "TEXT")?;
+    add_column_if_missing(conn, "bookmarks", "is_doubt", "INTEGER DEFAULT 0")?;
+
+    Ok(())
+}
+
+/// Adds a column to a table only if it does not already exist.
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    col_type: &str,
+) -> Result<(), rusqlite::Error> {
+    let sql = format!("PRAGMA table_info({})", table);
+    let mut stmt = conn.prepare(&sql)?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !columns.iter().any(|c| c == column) {
+        let alter = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, col_type);
+        conn.execute_batch(&alter)?;
+        println!("Added column {}.{}", table, column);
     }
     Ok(())
 }

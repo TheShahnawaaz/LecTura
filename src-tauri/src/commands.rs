@@ -59,7 +59,18 @@ pub struct Bookmark {
     pub video_id: String,
     pub timestamp: i32,
     pub label: Option<String>,
+    pub notes: Option<String>,
+    pub screenshot_path: Option<String>,
+    pub is_doubt: Option<bool>,
     pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GlobalBookmark {
+    pub bookmark: Bookmark,
+    pub video_title: String,
+    pub playlist_title: String,
+    pub playlist_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -473,14 +484,18 @@ pub fn get_study_stats(pool: State<'_, DbPool>) -> Result<StudyStats, String> {
 #[tauri::command]
 pub fn get_bookmarks(pool: State<'_, DbPool>, video_id: String) -> Result<Vec<Bookmark>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id, video_id, timestamp, label, created_at FROM bookmarks WHERE video_id = ?1 ORDER BY timestamp ASC").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, video_id, timestamp, label, notes, screenshot_path, is_doubt, created_at FROM bookmarks WHERE video_id = ?1 ORDER BY timestamp ASC").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&video_id], |row| {
+        let is_doubt_val: Option<i32> = row.get(6)?;
         Ok(Bookmark {
             id: row.get(0)?,
             video_id: row.get(1)?,
             timestamp: row.get(2)?,
             label: row.get(3)?,
-            created_at: row.get(4)?,
+            notes: row.get(4)?,
+            screenshot_path: row.get(5)?,
+            is_doubt: Some(is_doubt_val.unwrap_or(0) != 0),
+            created_at: row.get(7)?,
         })
     }).map_err(|e| e.to_string())?;
     
@@ -492,23 +507,36 @@ pub fn get_bookmarks(pool: State<'_, DbPool>, video_id: String) -> Result<Vec<Bo
 }
 
 #[tauri::command]
-pub fn add_bookmark(pool: State<'_, DbPool>, video_id: String, timestamp: i32, label: Option<String>) -> Result<Bookmark, String> {
+pub fn add_bookmark(
+    pool: State<'_, DbPool>, 
+    video_id: String, 
+    timestamp: i32, 
+    label: Option<String>,
+    notes: Option<String>,
+    screenshot_path: Option<String>,
+    is_doubt: Option<bool>,
+) -> Result<Bookmark, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    let is_doubt_val = if is_doubt.unwrap_or(false) { 1 } else { 0 };
     conn.execute(
-        "INSERT INTO bookmarks (video_id, timestamp, label) VALUES (?1, ?2, ?3)",
-        (&video_id, &timestamp, &label),
+        "INSERT INTO bookmarks (video_id, timestamp, label, notes, screenshot_path, is_doubt) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        (&video_id, &timestamp, &label, &notes, &screenshot_path, &is_doubt_val),
     ).map_err(|e| e.to_string())?;
     
     let last_id = conn.last_insert_rowid();
-    let mut stmt = conn.prepare("SELECT id, video_id, timestamp, label, created_at FROM bookmarks WHERE id = ?1").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT id, video_id, timestamp, label, notes, screenshot_path, is_doubt, created_at FROM bookmarks WHERE id = ?1").map_err(|e| e.to_string())?;
     
     let mut rows = stmt.query_map([last_id], |row| {
+        let db_is_doubt: Option<i32> = row.get(6)?;
         Ok(Bookmark {
             id: row.get(0)?,
             video_id: row.get(1)?,
             timestamp: row.get(2)?,
             label: row.get(3)?,
-            created_at: row.get(4)?,
+            notes: row.get(4)?,
+            screenshot_path: row.get(5)?,
+            is_doubt: Some(db_is_doubt.unwrap_or(0) != 0),
+            created_at: row.get(7)?,
         })
     }).map_err(|e| e.to_string())?;
     
@@ -523,11 +551,151 @@ pub fn add_bookmark(pool: State<'_, DbPool>, video_id: String, timestamp: i32, l
 #[tauri::command]
 pub fn delete_bookmark(pool: State<'_, DbPool>, id: i32) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    
+    // Optionally delete the screenshot file if it exists to clean up disk space
+    if let Ok(mut stmt) = conn.prepare("SELECT screenshot_path FROM bookmarks WHERE id = ?1") {
+        if let Ok(Some(path_str)) = stmt.query_row([id], |row| row.get::<_, Option<String>>(0)) {
+            let p = std::path::PathBuf::from(path_str);
+            if p.exists() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
     conn.execute(
         "DELETE FROM bookmarks WHERE id = ?1",
         [id],
     ).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn update_bookmark(
+    pool: State<'_, DbPool>,
+    id: i32,
+    label: Option<String>,
+    notes: Option<String>,
+    is_doubt: Option<bool>,
+    screenshot_path: Option<String>,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let is_doubt_val = if is_doubt.unwrap_or(false) { 1 } else { 0 };
+
+    if let Some(ref path) = screenshot_path {
+        // Optionally delete the old screenshot file if it exists and is different
+        if let Ok(mut stmt) = conn.prepare("SELECT screenshot_path FROM bookmarks WHERE id = ?1") {
+            if let Ok(Some(old_path)) = stmt.query_row([id], |row| row.get::<_, Option<String>>(0)) {
+                if old_path != *path {
+                    let p = std::path::PathBuf::from(old_path);
+                    if p.exists() {
+                        let _ = std::fs::remove_file(p);
+                    }
+                }
+            }
+        }
+
+        conn.execute(
+            "UPDATE bookmarks SET label = ?1, notes = ?2, is_doubt = ?3, screenshot_path = ?4 WHERE id = ?5",
+            (&label, &notes, &is_doubt_val, &screenshot_path, &id),
+        ).map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE bookmarks SET label = ?1, notes = ?2, is_doubt = ?3 WHERE id = ?4",
+            (&label, &notes, &is_doubt_val, &id),
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_all_bookmarks(pool: State<'_, DbPool>) -> Result<Vec<GlobalBookmark>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("
+        SELECT 
+            b.id, b.video_id, b.timestamp, b.label, b.notes, b.screenshot_path, b.is_doubt, b.created_at,
+            v.title as video_title,
+            p.title as playlist_title,
+            p.id as playlist_id
+        FROM bookmarks b
+        JOIN videos v ON b.video_id = v.id
+        JOIN playlists p ON v.playlist_id = p.id
+        ORDER BY b.created_at DESC
+    ").map_err(|e| e.to_string())?;
+    
+    let rows = stmt.query_map([], |row| {
+        let is_doubt_val: Option<i32> = row.get(6)?;
+        let bookmark = Bookmark {
+            id: row.get(0)?,
+            video_id: row.get(1)?,
+            timestamp: row.get(2)?,
+            label: row.get(3)?,
+            notes: row.get(4)?,
+            screenshot_path: row.get(5)?,
+            is_doubt: Some(is_doubt_val.unwrap_or(0) != 0),
+            created_at: row.get(7)?,
+        };
+        Ok(GlobalBookmark {
+            bookmark,
+            video_title: row.get(8)?,
+            playlist_title: row.get(9)?,
+            playlist_id: row.get(10)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn save_screenshot(
+    app_handle: tauri::AppHandle,
+    video_id: String,
+    timestamp: i32,
+    base64_data: String,
+) -> Result<String, String> {
+    use std::fs;
+    use base64::{Engine as _, engine::general_purpose};
+
+    let mut data_dir = app_handle.path_resolver().app_data_dir()
+        .ok_or_else(|| "Could not resolve app data directory".to_string())?;
+    
+    data_dir.push("screenshots");
+    if !data_dir.exists() {
+        fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let clean_base64 = if base64_data.contains(",") {
+        base64_data.split(',').nth(1).unwrap_or(&base64_data)
+    } else {
+        &base64_data
+    };
+    
+    let bytes = general_purpose::STANDARD.decode(clean_base64)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+    
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    // Detect PNG format from base64 string metadata
+    let extension = if base64_data.contains("image/png") {
+        "png"
+    } else {
+        "jpg"
+    };
+    // Use alphanumeric characters for video_id to prevent any directory traversal
+    let clean_video_id: String = video_id.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+    let filename = format!("{}_{}_{}.{}", clean_video_id, timestamp, now, extension);
+    data_dir.push(filename);
+    
+    fs::write(&data_dir, bytes).map_err(|e| e.to_string())?;
+    
+    let path_str = data_dir.to_str()
+        .ok_or_else(|| "Invalid path string".to_string())?;
+    Ok(path_str.to_string())
 }
 
 #[tauri::command]
@@ -1372,4 +1540,123 @@ pub fn set_download_speed_limit(active_downloads: State<'_, ActiveDownloads>, li
     let mut limit_val = active_downloads.speed_limit.lock().unwrap();
     *limit_val = limit;
     Ok(())
+}
+
+#[tauri::command]
+pub fn extract_video_frame(
+    app_handle: tauri::AppHandle,
+    local_path: String,
+    timestamp_secs: i32,
+) -> Result<String, String> {
+    use std::fs;
+    use std::process::Command;
+    use base64::{Engine as _, engine::general_purpose};
+
+    // 1. Get FFMPEG path
+    let ffmpeg_path = get_ffmpeg_path(&app_handle)
+        .ok_or_else(|| "FFmpeg binary not found. Please install or download it in Settings.".to_string())?;
+
+    // 2. Resolve temporary directory for screenshot extraction
+    let mut temp_dir = app_handle.path_resolver().app_data_dir()
+        .ok_or_else(|| "Could not resolve app data directory".to_string())?;
+    temp_dir.push("screenshots");
+    if !temp_dir.exists() {
+        fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    
+    // Use .png extension to get a lossless frame
+    let temp_filename = format!("temp_frame_{}_{}.png", timestamp_secs, now);
+    let temp_file_path = temp_dir.join(&temp_filename);
+
+    // 3. Format timestamp to hh:mm:ss for ffmpeg seek
+    let hours = timestamp_secs / 3600;
+    let minutes = (timestamp_secs % 3600) / 60;
+    let seconds = timestamp_secs % 60;
+    let formatted_time = format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
+
+    // 4. Run ffmpeg command to extract a single frame losslessly as PNG
+    let output = Command::new(&ffmpeg_path)
+        .arg("-ss")
+        .arg(&formatted_time)
+        .arg("-i")
+        .arg(&local_path)
+        .arg("-vframes")
+        .arg("1")
+        .arg("-y")
+        .arg(&temp_file_path)
+        .output()
+        .map_err(|e| format!("Failed to run FFmpeg process: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("FFmpeg failed to extract frame: {}", stderr));
+    }
+
+    // 5. Read the temp image file, encode to base64, and delete the temp file
+    if !temp_file_path.exists() {
+        return Err("FFmpeg completed but target image file was not created.".to_string());
+    }
+
+    let bytes = fs::read(&temp_file_path)
+        .map_err(|e| format!("Failed to read extracted frame file: {}", e))?;
+    
+    // Delete the temp file to keep directories clean
+    let _ = fs::remove_file(&temp_file_path);
+
+    let base64_str = general_purpose::STANDARD.encode(&bytes);
+    let data_url = format!("data:image/png;base64,{}", base64_str);
+
+    Ok(data_url)
+}
+
+#[tauri::command]
+pub fn get_youtube_thumbnail_base64(video_id: String) -> Result<String, String> {
+    use base64::{Engine as _, engine::general_purpose};
+
+    let maxres_url = format!("https://img.youtube.com/vi/{}/maxresdefault.jpg", video_id);
+    let hq_url = format!("https://img.youtube.com/vi/{}/hqdefault.jpg", video_id);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client.get(&maxres_url).send();
+    
+    let bytes = match response {
+        Ok(res) if res.status().is_success() => {
+            let bytes_vec = res.bytes().map_err(|e| e.to_string())?.to_vec();
+            if bytes_vec.len() < 3000 {
+                // Fetch fallback hqdefault if maxresdefault is the 120x90 placeholder
+                let res_fallback = client.get(&hq_url).send()
+                    .map_err(|e| format!("Failed to fetch fallback YouTube thumbnail: {}", e))?;
+                if res_fallback.status().is_success() {
+                    res_fallback.bytes().map_err(|e| e.to_string())?.to_vec()
+                } else {
+                    bytes_vec
+                }
+            } else {
+                bytes_vec
+            }
+        }
+        _ => {
+            // Fetch fallback
+            let res_fallback = client.get(&hq_url).send()
+                .map_err(|e| format!("Failed to fetch fallback YouTube thumbnail: {}", e))?;
+            if res_fallback.status().is_success() {
+                res_fallback.bytes().map_err(|e| e.to_string())?.to_vec()
+            } else {
+                return Err("Failed to download YouTube thumbnail".to_string());
+            }
+        }
+    };
+
+    let base64_str = general_purpose::STANDARD.encode(&bytes);
+    let data_url = format!("data:image/jpeg;base64,{}", base64_str);
+    Ok(data_url)
 }

@@ -50,10 +50,11 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  container,
   ...props
 }) {
   return (
-    <DialogPortal>
+    <DialogPortal container={container}>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"

@@ -63,6 +63,11 @@ fn main() {
             commands::get_download_queue,
             commands::clear_failed_download,
             commands::set_download_speed_limit,
+            commands::get_all_bookmarks,
+            commands::save_screenshot,
+            commands::extract_video_frame,
+            commands::get_youtube_thumbnail_base64,
+            commands::update_bookmark,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

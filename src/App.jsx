@@ -6,6 +6,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { Sidebar } from "./components/Sidebar";
 import { PlaylistDetail } from "./components/PlaylistDetail";
 import { FolderExplorer } from "./components/FolderExplorer";
+import RevisionLibrary from "./components/RevisionLibrary";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { ContextMenuProvider } from "./context/ContextMenuContext";
 import { FolderDeleteDialog } from "./components/FolderDeleteDialog";
@@ -71,6 +72,8 @@ function App() {
   const [libraryStats, setLibraryStats] = useState([]);
   const [videos, setVideos] = useState([]);
   const [activeVideo, setActiveVideo] = useState(null);
+  const [activeView, setActiveView] = useState("explorer"); // "explorer" vs "revision"
+  const [seekRequest, setSeekRequest] = useState(null); // { videoId, timestamp, time }
   const [bookmarks, setBookmarks] = useState([]);
   const [draggedItem, setDraggedItem] = useState(null);
 
@@ -682,6 +685,7 @@ function App() {
   const handleSelectPlaylist = (playlist, initialVideoId = null) => {
     setSelectedPlaylist(playlist);
     setActiveVideo(null);
+    setActiveView("explorer");
     if (playlist) {
       setSelectedFolderId(playlist.folder_id);
       fetchPlaylistVideos(playlist.id).then((data) => {
@@ -700,6 +704,27 @@ function App() {
     setSelectedFolderId(folderId);
     setSelectedPlaylist(null);
     setActiveVideo(null);
+    setActiveView("explorer");
+  };
+
+  const handlePlayBookmarkVideo = (playlistId, videoId, timestamp) => {
+    const playlist = playlists.find((p) => p.id === playlistId);
+    if (playlist) {
+      setSelectedPlaylist(playlist);
+      setSelectedFolderId(playlist.folder_id);
+      setActiveView("explorer");
+      
+      // Load video list
+      fetchPlaylistVideos(playlist.id).then((data) => {
+        if (data && data.length > 0) {
+          const targetVideo = data.find((v) => v.id === videoId);
+          if (targetVideo) {
+            setActiveVideo(targetVideo);
+            setSeekRequest({ videoId, timestamp, time: Date.now() });
+          }
+        }
+      });
+    }
   };
 
   const handleSelectSearchResult = (item) => {
@@ -898,6 +923,8 @@ function App() {
           draggedItem={draggedItem}
           setDraggedItem={setDraggedItem}
           onSelectFolderEmoji={setEmojiPickerTarget}
+          activeView={activeView}
+          setActiveView={setActiveView}
         />
 
         {/* ───── 2. MAIN CONTAINER ───── */}
@@ -1075,7 +1102,11 @@ function App() {
 
           {/* ───── Page Content ───── */}
           <main className="flex-1 overflow-hidden relative">
-            {selectedPlaylist ? (
+            {activeView === "revision" ? (
+              <RevisionLibrary
+                onPlayBookmarkVideo={handlePlayBookmarkVideo}
+              />
+            ) : selectedPlaylist ? (
               <div className="h-full w-full">
                 <PlaylistDetail
                   selectedPlaylist={selectedPlaylist}
@@ -1091,6 +1122,7 @@ function App() {
                   handleCancelVideoDownload={handleCancelVideoDownload}
                   handleCancelPlaylistDownload={handleCancelPlaylistDownload}
                   onStudyTimeLogged={handleLogStudyTime}
+                  seekRequest={seekRequest}
                 />
               </div>
             ) : (

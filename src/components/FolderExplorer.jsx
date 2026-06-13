@@ -424,7 +424,7 @@ export function FolderExplorer({
               )}
               <Badge
                 variant="secondary"
-                className="bg-primary/10 text-primary border border-primary/20 font-bold uppercase tracking-wider text-[8px] h-4.5 rounded-md"
+                className="bg-primary/10 text-primary border border-primary/20 font-bold uppercase tracking-wider text-[8px] h-5 rounded-md"
               >
                 {selectedFolderId ? "Directory View" : "Library Root"}
               </Badge>

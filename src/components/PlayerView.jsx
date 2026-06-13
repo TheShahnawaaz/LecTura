@@ -1,9 +1,36 @@
 import React, { useRef, useState, useEffect, useMemo } from "react";
-
-import { Sliders, WifiOff, Globe, Maximize, Minimize, SkipBack, SkipForward, CheckCircle2 } from "lucide-react";
-import { convertFileSrc } from "@tauri-apps/api/tauri";
+import { 
+  Sliders, 
+  WifiOff, 
+  Globe, 
+  Maximize, 
+  Minimize, 
+  SkipBack, 
+  SkipForward, 
+  CheckCircle2,
+  Camera,
+  Bookmark,
+  HelpCircle,
+  Trash2,
+  Calendar,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
+  Play,
+  ChevronLeft,
+  ChevronRight,
+  Edit3,
+  Clock
+} from "lucide-react";
+import { convertFileSrc, invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { BookmarkModal } from "./BookmarkModal";
+import { BookmarkCard } from "./BookmarkCard";
+
 
 export function PlayerView({
   activeVideo,
@@ -14,6 +41,7 @@ export function PlayerView({
   handleUpdateProgress,
   handleSelectVideo,
   onStudyTimeLogged,
+  seekRequest,
 }) {
   // Compute adjacent lecture navigation
   const currentIndex = videos ? videos.findIndex((v) => v.id === activeVideo.id) : -1;
@@ -32,6 +60,265 @@ export function PlayerView({
   const [iframeLoaded, setIframeLoaded] = useState(0);
   const [showTitleOverlay, setShowTitleOverlay] = useState(false);
   const titleOverlayTimerRef = useRef(null);
+
+  // Bookmarks & Doubts State
+  const [bookmarks, setBookmarks] = useState([]);
+  const [isBookmarkModalOpen, setIsBookmarkModalOpen] = useState(false);
+  const [capturedScreenshot, setCapturedScreenshot] = useState(null);
+  const [capturedTimestamp, setCapturedTimestamp] = useState(0);
+  const [isBookmarksTimelineOpen, setIsBookmarksTimelineOpen] = useState(true);
+  const [expandedPreviewBookmark, setExpandedPreviewBookmark] = useState(null);
+
+  const [editingBookmark, setEditingBookmark] = useState(null);
+
+  const handlePrevBookmarkRef = useRef(null);
+  const handleNextBookmarkRef = useRef(null);
+  const expandedPreviewBookmarkRef = useRef(null);
+  const handleCaptureBookmarkRef = useRef(null);
+
+  const handleUpdateBookmarkFromCanvas = async (label, notes, finalScreenshotDataUrl, isDoubtFlag) => {
+    if (!editingBookmark) return;
+    try {
+      let savedPath = editingBookmark.screenshot_path;
+      if (finalScreenshotDataUrl && finalScreenshotDataUrl.startsWith("data:")) {
+        // Save drawing onto disk inside app data screenshots directory
+        savedPath = await invoke("save_screenshot", {
+          videoId: activeVideo.id,
+          timestamp: editingBookmark.timestamp,
+          base64Data: finalScreenshotDataUrl,
+        });
+      }
+
+      await invoke("update_bookmark", {
+        id: editingBookmark.id,
+        label: label.trim(),
+        notes: notes.trim() || null,
+        isDoubt: isDoubtFlag,
+        screenshotPath: savedPath || null,
+      });
+
+      // Refetch bookmarks to render inside video list
+      fetchBookmarks();
+      setEditingBookmark(null);
+    } catch (err) {
+      console.error("Failed to update bookmark from canvas:", err);
+      alert(`Error updating doubt/bookmark: ${err}`);
+    }
+  };
+
+  const fetchBookmarks = async () => {
+    try {
+      const data = await invoke("get_bookmarks", { videoId: activeVideo.id });
+      setBookmarks(data || []);
+    } catch (err) {
+      console.error("Failed to fetch bookmarks:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeVideo?.id) {
+      fetchBookmarks();
+    }
+  }, [activeVideo?.id]);
+
+  // Listen to seekRequest changes from global dashboard
+  useEffect(() => {
+    if (seekRequest && seekRequest.videoId === activeVideo?.id) {
+      const time = seekRequest.timestamp;
+      
+      const doSeek = () => {
+        if (isOffline) {
+          if (videoPlayerRef.current) {
+            videoPlayerRef.current.currentTime = time;
+            videoPlayerRef.current.play().catch(console.error);
+          } else {
+            savedTimeRef.current = time;
+          }
+        } else {
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === "function") {
+            ytPlayerRef.current.seekTo(time, true);
+            ytPlayerRef.current.playVideo();
+          } else {
+            savedTimeRef.current = time;
+          }
+        }
+      };
+
+      doSeek();
+      
+      const timer = setTimeout(doSeek, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [seekRequest, activeVideo?.id, isOffline]);
+
+  const getYouTubeThumbnail = (videoId) => {
+    return new Promise((resolve) => {
+      const maxResUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+      const img = new Image();
+      img.onload = () => {
+        if (img.width === 120 && img.height === 90) {
+          resolve(`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`);
+        } else {
+          resolve(maxResUrl);
+        }
+      };
+      img.onerror = () => {
+        resolve(`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`);
+      };
+      img.src = maxResUrl;
+    });
+  };
+
+  const handleCaptureBookmark = async () => {
+    // 1. Pause video playback
+    if (isOffline) {
+      if (videoPlayerRef.current) {
+        videoPlayerRef.current.pause();
+        setWatching(false);
+      }
+    } else {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.pauseVideo === "function") {
+        ytPlayerRef.current.pauseVideo();
+        setWatching(false);
+      }
+    }
+
+    // 2. Get current timestamp
+    let currentTimestamp = 0;
+    if (isOffline) {
+      if (videoPlayerRef.current) {
+        currentTimestamp = Math.round(videoPlayerRef.current.currentTime);
+      }
+    } else {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.getCurrentTime === "function") {
+        currentTimestamp = Math.round(ytPlayerRef.current.getCurrentTime());
+      }
+    }
+
+    // 3. Obtain screenshot image source
+    if (isOffline) {
+      try {
+        // First try backend FFmpeg extraction (most reliable, avoids WebKit CORS/canvas taint restrictions)
+        const dataUrl = await invoke("extract_video_frame", {
+          localPath: activeVideo.local_path,
+          timestampSecs: currentTimestamp,
+        });
+        setCapturedScreenshot(dataUrl);
+        setCapturedTimestamp(currentTimestamp);
+        setIsBookmarkModalOpen(true);
+      } catch (err) {
+        console.error("Local video FFmpeg frame extraction failed, falling back to canvas:", err);
+        const video = videoPlayerRef.current;
+        if (video) {
+          const canvas = document.createElement("canvas");
+          canvas.width = video.videoWidth || 1280;
+          canvas.height = video.videoHeight || 720;
+          const ctx = canvas.getContext("2d");
+          try {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+            setCapturedScreenshot(dataUrl);
+            setCapturedTimestamp(currentTimestamp);
+            setIsBookmarkModalOpen(true);
+          } catch (canvasErr) {
+            console.error("Local video canvas capture fallback also failed:", canvasErr);
+            alert(`Could not extract video frame. Please download/verify FFmpeg in Settings. Error: ${err}`);
+            setCapturedScreenshot(null);
+            setCapturedTimestamp(currentTimestamp);
+            setIsBookmarkModalOpen(true);
+          }
+        }
+      }
+    } else {
+      try {
+        // Fetch YouTube thumbnail via backend reqwest request to bypass CORS restrictions
+        const dataUrl = await invoke("get_youtube_thumbnail_base64", {
+          videoId: activeVideo.id,
+        });
+        setCapturedScreenshot(dataUrl);
+        setCapturedTimestamp(currentTimestamp);
+        setIsBookmarkModalOpen(true);
+      } catch (err) {
+        console.error("YouTube thumbnail proxy failed, falling back to direct URL:", err);
+        const thumbUrl = await getYouTubeThumbnail(activeVideo.id);
+        setCapturedScreenshot(thumbUrl);
+        setCapturedTimestamp(currentTimestamp);
+        setIsBookmarkModalOpen(true);
+      }
+    }
+  };
+
+  const handleSaveBookmark = async (label, notes, finalScreenshotDataUrl, isDoubtFlag) => {
+    try {
+      let savedPath = null;
+      if (finalScreenshotDataUrl && finalScreenshotDataUrl.startsWith("data:")) {
+        // Save drawing onto disk inside app data screenshots directory
+        savedPath = await invoke("save_screenshot", {
+          videoId: activeVideo.id,
+          timestamp: capturedTimestamp,
+          base64Data: finalScreenshotDataUrl,
+        });
+      }
+
+      await invoke("add_bookmark", {
+        videoId: activeVideo.id,
+        timestamp: capturedTimestamp,
+        label,
+        notes: notes || null,
+        screenshotPath: savedPath || null,
+        isDoubt: isDoubtFlag || false,
+      });
+
+      // Refetch bookmarks to render inside video list
+      fetchBookmarks();
+    } catch (err) {
+      console.error("Failed to save bookmark:", err);
+    }
+  };
+
+  const handleDeleteBookmark = async (id, e) => {
+    e.stopPropagation();
+    if (!confirm("Are you sure you want to delete this note?")) return;
+    try {
+      await invoke("delete_bookmark", { id });
+      fetchBookmarks();
+    } catch (err) {
+      console.error("Failed to delete bookmark:", err);
+    }
+  };
+
+  const handleJumpToTime = (time) => {
+    if (isOffline) {
+      if (videoPlayerRef.current) {
+        videoPlayerRef.current.currentTime = time;
+        videoPlayerRef.current.play().catch(console.error);
+      }
+    } else {
+      if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === "function") {
+        ytPlayerRef.current.seekTo(time, true);
+        ytPlayerRef.current.playVideo();
+      }
+    }
+  };
+
+  const formatTime = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const formatDate = (dateStr) => {
+    try {
+      const d = new Date(dateStr);
+      return d.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    } catch {
+      return dateStr;
+    }
+  };
 
   // Autoplay preferences (stored in localStorage)
   const [autoplayEnabled, setAutoplayEnabled] = useState(() => {
@@ -421,6 +708,33 @@ export function PlayerView({
         return;
       }
 
+      // Navigation shortcuts inside note expanded preview modal
+      if (expandedPreviewBookmarkRef.current) {
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          if (handlePrevBookmarkRef.current) {
+            handlePrevBookmarkRef.current();
+          }
+          return;
+        }
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          if (handleNextBookmarkRef.current) {
+            handleNextBookmarkRef.current();
+          }
+          return;
+        }
+      }
+
+      // Capture bookmark/doubt on keys 'b' or 'c' (works in fullscreen as well)
+      if (e.key.toLowerCase() === "b" || e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        if (handleCaptureBookmarkRef.current) {
+          handleCaptureBookmarkRef.current();
+        }
+        return;
+      }
+
       // For spacebar: immediately prevent default to stop:
       // 1. Page scrolling
       // 2. Focused <button> from receiving a synthetic click on keyup
@@ -750,6 +1064,31 @@ export function PlayerView({
     </div>
   );
 
+  const currentBookmarkIndex = expandedPreviewBookmark
+    ? bookmarks.findIndex((b) => b.id === expandedPreviewBookmark.id)
+    : -1;
+  const hasPrevBookmark = currentBookmarkIndex > 0;
+  const hasNextBookmark = currentBookmarkIndex !== -1 && currentBookmarkIndex < bookmarks.length - 1;
+
+  const handlePrevBookmark = () => {
+    if (hasPrevBookmark) {
+      setExpandedPreviewBookmark(bookmarks[currentBookmarkIndex - 1]);
+    }
+  };
+
+  const handleNextBookmark = () => {
+    if (hasNextBookmark) {
+      setExpandedPreviewBookmark(bookmarks[currentBookmarkIndex + 1]);
+    }
+  };
+
+  useEffect(() => {
+    handlePrevBookmarkRef.current = handlePrevBookmark;
+    handleNextBookmarkRef.current = handleNextBookmark;
+    expandedPreviewBookmarkRef.current = expandedPreviewBookmark;
+    handleCaptureBookmarkRef.current = handleCaptureBookmark;
+  });
+
   return (
     <div 
       className="flex flex-col gap-4 animate-fade-in"
@@ -803,6 +1142,16 @@ export function PlayerView({
             >
               <CheckCircle2 size={13} className={activeVideo.is_completed ? "fill-emerald-500/10 text-emerald-500" : "text-muted-foreground/60"} />
               <span>{activeVideo.is_completed ? "Completed" : "Mark Completed"}</span>
+            </button>
+
+            {/* Capture Doubt/Note Button */}
+            <button
+              onClick={handleCaptureBookmark}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border bg-muted/40 hover:bg-muted/80 text-muted-foreground hover:text-foreground text-xs font-semibold cursor-pointer transition-all duration-150 h-[34px]"
+              title="Capture current screen and add a revision note or doubt"
+            >
+              <Camera size={13} className="text-primary" />
+              <span>Doubt / Bookmark</span>
             </button>
 
             {/* Autoplay Toggle Switch */}
@@ -902,6 +1251,198 @@ export function PlayerView({
           </button>
         </div>
       )}
+
+      {/* ───── 3. Bookmarks & Doubts Timeline Panel ───── */}
+      {bookmarks.length > 0 && (
+        <div className="mt-4">
+          <button
+            onClick={() => setIsBookmarksTimelineOpen(!isBookmarksTimelineOpen)}
+            className="w-full flex items-center justify-between py-2 border-b border-border text-left select-none cursor-pointer mb-3"
+          >
+            <div className="flex items-center gap-2">
+              <Bookmark size={14} className="text-primary" />
+              <h4 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-1.5">
+                <span>Lecture Bookmarks & Doubts</span>
+                <Badge variant="secondary" className="px-1.5 py-0.5 rounded-full text-[9px] font-bold shrink-0">
+                  {bookmarks.length}
+                </Badge>
+              </h4>
+            </div>
+            {isBookmarksTimelineOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+
+          {isBookmarksTimelineOpen && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {bookmarks.map((b) => (
+                <BookmarkCard
+                  key={b.id}
+                  bookmark={b}
+                  onPlay={() => handleJumpToTime(b.timestamp)}
+                  onEdit={() => {
+                    setEditingBookmark(b);
+                    setIsBookmarkModalOpen(true);
+                  }}
+                  onDelete={() => handleDeleteBookmark(b.id)}
+                  onClick={() => setExpandedPreviewBookmark(b)}
+                  defaultVideoId={activeVideo.id}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ───── Bookmark Creation / Editing Modal drawing editor ───── */}
+      <BookmarkModal
+        isOpen={isBookmarkModalOpen}
+        onClose={() => {
+          setIsBookmarkModalOpen(false);
+          setEditingBookmark(null);
+        }}
+        screenshotUrl={
+          editingBookmark
+            ? (editingBookmark.screenshot_path 
+                ? convertFileSrc(editingBookmark.screenshot_path)
+                : `https://img.youtube.com/vi/${activeVideo.id}/maxresdefault.jpg`)
+            : capturedScreenshot
+        }
+        videoId={activeVideo.id}
+        timestamp={editingBookmark ? editingBookmark.timestamp : capturedTimestamp}
+        videoTitle={activeVideo.title}
+        initialLabel={editingBookmark ? editingBookmark.label : ""}
+        initialNotes={editingBookmark ? editingBookmark.notes : ""}
+        initialIsDoubt={editingBookmark ? !!editingBookmark.is_doubt : false}
+        onSave={editingBookmark ? handleUpdateBookmarkFromCanvas : handleSaveBookmark}
+        container={isFullscreen ? containerRef.current : undefined}
+      />
+
+      {/* ───── Full Details Preview Sub-Dialog ───── */}
+      {expandedPreviewBookmark && (
+        <Dialog open={!!expandedPreviewBookmark} onOpenChange={(open) => !open && setExpandedPreviewBookmark(null)}>
+          <DialogContent 
+            container={isFullscreen ? containerRef.current : undefined}
+            className="bg-card border-border text-foreground max-w-[95vw] w-full md:max-w-[95vw] lg:max-w-7xl xl:max-w-[92vw] 2xl:max-w-[90vw] p-5 flex flex-col gap-4 max-h-[95vh] overflow-hidden select-text"
+          >
+            
+            <DialogHeader className="pb-2 border-b border-border flex-shrink-0 flex flex-row items-center justify-between gap-4">
+              <div>
+                <DialogTitle className="text-sm font-semibold tracking-wide uppercase flex items-center gap-1.5">
+                  <Sparkles size={14} className="text-primary" />
+                  {expandedPreviewBookmark.label}
+                </DialogTitle>
+                <DialogDescription className="text-muted-foreground text-xs mt-0.5">
+                  Lecture: <strong>{activeVideo.title}</strong> @ {formatTime(expandedPreviewBookmark.timestamp)}
+                </DialogDescription>
+              </div>
+              <Badge variant={expandedPreviewBookmark.is_doubt ? "destructive" : "secondary"}>
+                {expandedPreviewBookmark.is_doubt ? "Doubt ❓" : "Bookmark 🔖"}
+              </Badge>
+            </DialogHeader>
+
+            <div className="flex-1 min-h-0 flex flex-col md:flex-row gap-5">
+              {/* Left Panel: Large visual preview with carousel navigation */}
+              <div className="flex-grow min-h-0 bg-zinc-950 border border-border/80 rounded-xl overflow-hidden flex items-center justify-center relative aspect-video select-none group/carousel">
+                <img
+                  src={
+                    expandedPreviewBookmark.screenshot_path
+                      ? convertFileSrc(expandedPreviewBookmark.screenshot_path)
+                      : `https://img.youtube.com/vi/${activeVideo.id}/maxresdefault.jpg`
+                  }
+                  alt={expandedPreviewBookmark.label}
+                  className="w-full h-full object-contain max-h-[70vh]"
+                />
+                
+                {/* Carousel Left Arrow */}
+                {hasPrevBookmark && (
+                  <button
+                    onClick={handlePrevBookmark}
+                    className="absolute left-3.5 p-2 rounded-full bg-black/60 hover:bg-black/85 text-white border border-white/10 shadow hover:scale-105 transition duration-150 cursor-pointer z-10"
+                    title="Previous Note"
+                  >
+                    <ChevronLeft size={18} />
+                  </button>
+                )}
+
+                {/* Carousel Right Arrow */}
+                {hasNextBookmark && (
+                  <button
+                    onClick={handleNextBookmark}
+                    className="absolute right-3.5 p-2 rounded-full bg-black/60 hover:bg-black/85 text-white border border-white/10 shadow hover:scale-105 transition duration-150 cursor-pointer z-10"
+                    title="Next Note"
+                  >
+                    <ChevronRight size={18} />
+                  </button>
+                )}
+              </div>
+
+              {/* Right Panel: Notes and read-only details */}
+              <div className="w-full md:w-80 flex flex-col gap-4 border-t md:border-t-0 md:border-l border-border pt-4 md:pt-0 md:pl-5 flex-shrink-0 max-h-[60vh] md:max-h-none overflow-y-auto">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground">Notes / Discussion Detail</span>
+                  {expandedPreviewBookmark.notes ? (
+                    <div className="text-xs text-foreground/90 font-medium bg-muted/30 border border-border rounded-xl p-3.5 leading-relaxed whitespace-pre-wrap">
+                      {expandedPreviewBookmark.notes}
+                    </div>
+                  ) : (
+                    <p className="text-xs italic text-muted-foreground">No description notes written.</p>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-2 mt-auto pt-4 border-t border-border/40 select-none">
+                  <Button
+                    size="sm"
+                    className="h-9 text-xs bg-primary text-primary-foreground hover:bg-primary/80 flex items-center justify-center gap-1.5"
+                    onClick={() => {
+                      const time = expandedPreviewBookmark.timestamp;
+                      setExpandedPreviewBookmark(null);
+                      handleJumpToTime(time);
+                    }}
+                  >
+                    <Play size={13} fill="currentColor" />
+                    Jump to Stamp
+                  </Button>
+                  
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 h-9 text-xs border-border hover:bg-muted text-muted-foreground"
+                      onClick={() => {
+                        setEditingBookmark(expandedPreviewBookmark);
+                        setExpandedPreviewBookmark(null);
+                        setIsBookmarkModalOpen(true);
+                      }}
+                    >
+                      Edit Details
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 h-9 text-xs border-border hover:bg-muted text-muted-foreground hover:text-destructive"
+                      onClick={async () => {
+                        if (confirm("Are you sure you want to delete this doubt/bookmark?")) {
+                          try {
+                            await invoke("delete_bookmark", { id: expandedPreviewBookmark.id });
+                            fetchBookmarks();
+                            setExpandedPreviewBookmark(null);
+                          } catch (err) {
+                            console.error(err);
+                          }
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </DialogContent>
+        </Dialog>
+      )}
+
     </div>
   );
 }
+

@@ -20,6 +20,7 @@ export function PlaylistDetail({
   handleCancelVideoDownload,
   handleCancelPlaylistDownload,
   onStudyTimeLogged,
+  seekRequest,
 }) {
   const activeVideoRef = useRef(null);
 
@@ -133,6 +134,7 @@ export function PlaylistDetail({
             handleUpdateProgress={handleUpdateProgress}
             handleSelectVideo={handleSelectVideo}
             onStudyTimeLogged={onStudyTimeLogged}
+            seekRequest={seekRequest}
           />
         ) : (
           /* No Active Video placeholder */

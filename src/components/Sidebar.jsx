@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Trash2,
   Play,
+  BookOpen,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useContextMenu } from "../context/ContextMenuContext";
@@ -45,6 +46,8 @@ export function Sidebar({
   draggedItem,
   setDraggedItem,
   onSelectFolderEmoji,
+  activeView,
+  setActiveView,
 }) {
   const [isHeaderHovered, setIsHeaderHovered] = useState(false);
   const [isDragOverRoot, setIsDragOverRoot] = useState(false);
@@ -185,7 +188,40 @@ export function Sidebar({
           </>
         )}
       </div>
+      {/* ───── Dashboard/Revision Switcher ───── */}
+      <div className={`px-3 pt-1 pb-3 flex flex-col gap-1 border-b border-border/60 ${isCollapsed ? "items-center" : ""}`}>
+        {/* Course Library Tab */}
+        <button
+          onClick={() => {
+            setActiveView("explorer");
+          }}
+          className={`flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors text-xs w-full text-left cursor-pointer font-bold ${
+            activeView === "explorer"
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+          } ${isCollapsed ? "justify-center w-9 h-9 p-0" : ""}`}
+          title="Course Library"
+        >
+          <Library size={15} className="flex-shrink-0" />
+          {!isCollapsed && <span>Course Library</span>}
+        </button>
 
+        {/* Revision Library Tab */}
+        <button
+          onClick={() => {
+            setActiveView("revision");
+          }}
+          className={`flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors text-xs w-full text-left cursor-pointer font-bold ${
+            activeView === "revision"
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+          } ${isCollapsed ? "justify-center w-9 h-9 p-0" : ""}`}
+          title="Revision Library"
+        >
+          <BookOpen size={15} className="flex-shrink-0" />
+          {!isCollapsed && <span>Revision Library</span>}
+        </button>
+      </div>
       {/* ───── Library Navigation Tree (Scrollable) ───── */}
       <nav
         onDragOver={(e) => {
