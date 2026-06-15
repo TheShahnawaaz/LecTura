@@ -60,6 +60,7 @@ fn main() {
             commands::update_folder_emoji,
             commands::log_study_time,
             commands::get_study_stats,
+            commands::get_day_study_details,
             commands::get_download_queue,
             commands::clear_failed_download,
             commands::set_download_speed_limit,

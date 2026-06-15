@@ -26,12 +26,18 @@ import {
 
 export default function RevisionLibrary({
   onPlayBookmarkVideo, // (playlistId, videoId, timestamp) => void
+  initialCategoryFilter = "all",
 }) {
   const [globalBookmarks, setGlobalBookmarks] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState("all"); // "all", "bookmarks", "doubts"
+  const [categoryFilter, setCategoryFilter] = useState(initialCategoryFilter); // "all", "bookmarks", "doubts"
   const [courseFilter, setCourseFilter] = useState("all"); // "all" or playlistId
   const [isLoading, setIsLoading] = useState(true);
+
+  // Sync categoryFilter if initialCategoryFilter prop changes
+  React.useEffect(() => {
+    setCategoryFilter(initialCategoryFilter);
+  }, [initialCategoryFilter]);
 
   // Expanded View Modal
   const [expandedBookmark, setExpandedBookmark] = useState(null);

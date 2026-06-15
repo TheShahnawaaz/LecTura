@@ -73,6 +73,7 @@ function App() {
   const [videos, setVideos] = useState([]);
   const [activeVideo, setActiveVideo] = useState(null);
   const [activeView, setActiveView] = useState("explorer"); // "explorer" vs "revision"
+  const [revisionFilter, setRevisionFilter] = useState("all"); // "all", "bookmarks", "doubts"
   const [seekRequest, setSeekRequest] = useState(null); // { videoId, timestamp, time }
   const [bookmarks, setBookmarks] = useState([]);
   const [draggedItem, setDraggedItem] = useState(null);
@@ -1105,6 +1106,7 @@ function App() {
             {activeView === "revision" ? (
               <RevisionLibrary
                 onPlayBookmarkVideo={handlePlayBookmarkVideo}
+                initialCategoryFilter={revisionFilter}
               />
             ) : selectedPlaylist ? (
               <div className="h-full w-full">
@@ -1141,6 +1143,9 @@ function App() {
                 studyStats={studyStats}
                 dailyStudyGoal={dailyStudyGoal}
                 fetchStudyStats={fetchStudyStats}
+                onPlayBookmarkVideo={handlePlayBookmarkVideo}
+                setActiveView={setActiveView}
+                setRevisionFilter={setRevisionFilter}
               />
             )}
           </main>

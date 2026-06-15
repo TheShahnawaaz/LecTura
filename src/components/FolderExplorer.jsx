@@ -37,6 +37,9 @@ export function FolderExplorer({
   studyStats,
   dailyStudyGoal,
   fetchStudyStats,
+  onPlayBookmarkVideo,
+  setActiveView,
+  setRevisionFilter,
 }) {
   
   // Fetch stats on mount / folder changes
@@ -504,6 +507,12 @@ export function FolderExplorer({
           <StudyDashboard
             studyStats={studyStats}
             dailyStudyGoal={dailyStudyGoal}
+            libraryStats={libraryStats}
+            playlists={playlists}
+            onPlayBookmarkVideo={onPlayBookmarkVideo}
+            setActiveView={setActiveView}
+            setRevisionFilter={setRevisionFilter}
+            onSelectPlaylist={handleSelectPlaylist}
           />
         )}
         {/* Render nested folders grid if any */}

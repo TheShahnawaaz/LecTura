@@ -416,11 +416,48 @@ pub fn update_video_progress(pool: State<'_, DbPool>, video_id: String, seconds:
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RecentStudyLog {
+    pub id: i32,
+    pub video_id: String,
+    pub video_title: String,
+    pub playlist_id: String,
+    pub playlist_title: String,
+    pub duration_seconds: i32,
+    pub created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HourlyActivity {
+    pub hour: i32,
+    pub duration_seconds: i32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct VideoStudyDetail {
+    pub video_id: String,
+    pub video_title: String,
+    pub playlist_id: String,
+    pub playlist_title: String,
+    pub duration_seconds: i32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DayStudyDetails {
+    pub date: String,
+    pub total_seconds: i32,
+    pub hourly_activity: Vec<HourlyActivity>,
+    pub video_details: Vec<VideoStudyDetail>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StudyStats {
     pub total_study_seconds: i32,
     pub total_video_covered_seconds: i32,
     pub completed_lectures_count: i32,
     pub daily_logs: HashMap<String, i32>,
+    pub recent_logs: Vec<RecentStudyLog>,
+    pub total_doubts_count: i32,
+    pub total_bookmarks_count: i32,
 }
 
 #[tauri::command]
@@ -473,11 +510,128 @@ pub fn get_study_stats(pool: State<'_, DbPool>) -> Result<StudyStats, String> {
         daily_logs.insert(day, seconds);
     }
 
+    // 5. Recent study logs (10 most recent)
+    let mut stmt_logs = conn.prepare(
+        "SELECT 
+            l.id, l.video_id, v.title as video_title, 
+            COALESCE(p.id, '') as playlist_id, 
+            COALESCE(p.title, 'Unassigned Course') as playlist_title,
+            l.duration_seconds, 
+            datetime(l.created_at, 'localtime') as created_at
+         FROM study_logs l
+         JOIN videos v ON l.video_id = v.id
+         LEFT JOIN playlists p ON v.playlist_id = p.id
+         ORDER BY l.created_at DESC
+         LIMIT 10"
+    ).map_err(|e| e.to_string())?;
+    
+    let log_rows = stmt_logs.query_map([], |row| {
+        Ok(RecentStudyLog {
+            id: row.get(0)?,
+            video_id: row.get(1)?,
+            video_title: row.get(2)?,
+            playlist_id: row.get(3)?,
+            playlist_title: row.get(4)?,
+            duration_seconds: row.get(5)?,
+            created_at: row.get(6)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut recent_logs = Vec::new();
+    for row in log_rows {
+        recent_logs.push(row.map_err(|e| e.to_string())?);
+    }
+
+    // 6. Total bookmark/doubt counts
+    let total_doubts_count: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM bookmarks WHERE is_doubt = 1",
+        [],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    let total_bookmarks_count: i32 = conn.query_row(
+        "SELECT COUNT(*) FROM bookmarks WHERE is_doubt = 0",
+        [],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
     Ok(StudyStats {
         total_study_seconds,
         total_video_covered_seconds,
         completed_lectures_count,
         daily_logs,
+        recent_logs,
+        total_doubts_count,
+        total_bookmarks_count,
+    })
+}
+
+#[tauri::command]
+pub fn get_day_study_details(pool: State<'_, DbPool>, date_str: String) -> Result<DayStudyDetails, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+
+    // 1. Total seconds for that day
+    let total_seconds: i32 = conn.query_row(
+        "SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE date(created_at, 'localtime') = ?1",
+        [&date_str],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+
+    // 2. Hourly activity
+    let mut stmt_hourly = conn.prepare(
+        "SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) as hr, SUM(duration_seconds) 
+         FROM study_logs 
+         WHERE date(created_at, 'localtime') = ?1 
+         GROUP BY hr"
+    ).map_err(|e| e.to_string())?;
+
+    let hourly_rows = stmt_hourly.query_map([&date_str], |row| {
+        Ok(HourlyActivity {
+            hour: row.get(0)?,
+            duration_seconds: row.get(1)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut hourly_activity = Vec::new();
+    for row in hourly_rows {
+        hourly_activity.push(row.map_err(|e| e.to_string())?);
+    }
+
+    // 3. Video details
+    let mut stmt_videos = conn.prepare(
+        "SELECT 
+            v.id, v.title, 
+            COALESCE(p.id, '') as playlist_id, 
+            COALESCE(p.title, 'Unassigned Course') as playlist_title, 
+            SUM(l.duration_seconds) as total_seconds
+         FROM study_logs l
+         JOIN videos v ON l.video_id = v.id
+         LEFT JOIN playlists p ON v.playlist_id = p.id
+         WHERE date(l.created_at, 'localtime') = ?1
+         GROUP BY v.id
+         ORDER BY total_seconds DESC"
+    ).map_err(|e| e.to_string())?;
+
+    let video_rows = stmt_videos.query_map([&date_str], |row| {
+        Ok(VideoStudyDetail {
+            video_id: row.get(0)?,
+            video_title: row.get(1)?,
+            playlist_id: row.get(2)?,
+            playlist_title: row.get(3)?,
+            duration_seconds: row.get(4)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut video_details = Vec::new();
+    for row in video_rows {
+        video_details.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(DayStudyDetails {
+        date: date_str,
+        total_seconds,
+        hourly_activity,
+        video_details,
     })
 }
 
