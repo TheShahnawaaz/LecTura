@@ -12,9 +12,8 @@ import {
   Download,
   Copy,
   ExternalLink,
-  Trash2,
-  Play,
   BookOpen,
+  HardDrive,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useContextMenu } from "../context/ContextMenuContext";
@@ -220,6 +219,22 @@ export function Sidebar({
         >
           <BookOpen size={15} className="flex-shrink-0" />
           {!isCollapsed && <span>Revision Library</span>}
+        </button>
+
+        {/* Storage Manager Tab */}
+        <button
+          onClick={() => {
+            setActiveView("storage");
+          }}
+          className={`flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors text-xs w-full text-left cursor-pointer font-bold ${
+            activeView === "storage"
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+          } ${isCollapsed ? "justify-center w-9 h-9 p-0" : ""}`}
+          title="Storage Manager"
+        >
+          <HardDrive size={15} className="flex-shrink-0" />
+          {!isCollapsed && <span>Storage Manager</span>}
         </button>
       </div>
       {/* ───── Library Navigation Tree (Scrollable) ───── */}

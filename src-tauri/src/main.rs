@@ -69,6 +69,12 @@ fn main() {
             commands::extract_video_frame,
             commands::get_youtube_thumbnail_base64,
             commands::update_bookmark,
+            commands::open_app_data_folder,
+            commands::reveal_in_explorer,
+            commands::verify_file_exists,
+            commands::delete_video_file,
+            commands::scan_storage,
+            commands::clean_storage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

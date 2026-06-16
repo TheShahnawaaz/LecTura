@@ -7,6 +7,7 @@ import { Sidebar } from "./components/Sidebar";
 import { PlaylistDetail } from "./components/PlaylistDetail";
 import { FolderExplorer } from "./components/FolderExplorer";
 import RevisionLibrary from "./components/RevisionLibrary";
+import StorageManager from "./components/StorageManager";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { ContextMenuProvider } from "./context/ContextMenuContext";
 import { FolderDeleteDialog } from "./components/FolderDeleteDialog";
@@ -305,6 +306,48 @@ function App() {
       setBookmarks([]);
     }
   }, [activeVideo]);
+
+  // Self-heal download status if local file goes missing from disk
+  useEffect(() => {
+    if (!activeVideo) return;
+    
+    if (activeVideo.download_status === "completed" && activeVideo.local_path) {
+      const verifyOfflineFile = async () => {
+        try {
+          const exists = await invoke("verify_file_exists", { path: activeVideo.local_path });
+          if (!exists) {
+            console.log("Local file is missing for video:", activeVideo.id);
+            
+            // 1. Reset database state to 'none' and local_path to null
+            await invoke("update_download_progress", {
+              videoId: activeVideo.id,
+              status: "none",
+              progress: 0,
+              localPath: null,
+            });
+            
+            // 2. Update state to reflect changes
+            const resetVideo = {
+              ...activeVideo,
+              download_status: "none",
+              download_progress: 0,
+              local_path: null,
+            };
+            
+            setVideos((prev) =>
+              prev.map((v) => (v.id === activeVideo.id ? resetVideo : v))
+            );
+            setActiveVideo(resetVideo);
+            fetchLibraryStats();
+          }
+        } catch (err) {
+          console.error("Failed to verify local video file:", err);
+        }
+      };
+      
+      verifyOfflineFile();
+    }
+  }, [activeVideo?.id]);
 
   // ─── Tauri API Invokes ────────────────────────────────────
   const fetchFolders = async () => {
@@ -651,6 +694,37 @@ function App() {
     }
   };
 
+  const handleDeleteVideoFile = async (video) => {
+    if (!confirm(`Are you sure you want to delete the offline file for "${video.title}"?`)) {
+      return;
+    }
+    try {
+      await invoke("delete_video_file", { videoId: video.id });
+      
+      const updatedVideo = {
+        ...video,
+        download_status: "none",
+        download_progress: 0,
+        local_path: null,
+      };
+
+      setVideos((prev) =>
+        prev.map((v) => (v.id === video.id ? updatedVideo : v))
+      );
+      
+      setActiveVideo((prev) => {
+        if (prev && prev.id === video.id) {
+          return updatedVideo;
+        }
+        return prev;
+      });
+
+      fetchLibraryStats();
+    } catch (err) {
+      alert("Failed to delete offline file: " + err);
+    }
+  };
+
   const handleCancelPlaylistDownload = async (playlistId) => {
     try {
       await invoke("cancel_playlist_download", { playlistId });
@@ -725,6 +799,25 @@ function App() {
           }
         }
       });
+    }
+  };
+
+  const handleNavigateToPlaylist = (playlistId, videoId) => {
+    const playlist = playlists.find((p) => p.id === playlistId);
+    if (playlist) {
+      setSelectedPlaylist(playlist);
+      setSelectedFolderId(playlist.folder_id);
+      setActiveView("explorer");
+      if (videoId) {
+        fetchPlaylistVideos(playlistId).then((data) => {
+          if (data && data.length > 0) {
+            const video = data.find((v) => v.id === videoId);
+            if (video) {
+              setActiveVideo(video);
+            }
+          }
+        });
+      }
     }
   };
 
@@ -1103,7 +1196,9 @@ function App() {
 
           {/* ───── Page Content ───── */}
           <main className="flex-1 overflow-hidden relative">
-            {activeView === "revision" ? (
+            {activeView === "storage" ? (
+              <StorageManager onNavigateToPlaylist={handleNavigateToPlaylist} />
+            ) : activeView === "revision" ? (
               <RevisionLibrary
                 onPlayBookmarkVideo={handlePlayBookmarkVideo}
                 initialCategoryFilter={revisionFilter}
@@ -1123,6 +1218,7 @@ function App() {
                   handleSelectVideo={handleSelectVideo}
                   handleCancelVideoDownload={handleCancelVideoDownload}
                   handleCancelPlaylistDownload={handleCancelPlaylistDownload}
+                  handleDeleteVideoFile={handleDeleteVideoFile}
                   onStudyTimeLogged={handleLogStudyTime}
                   seekRequest={seekRequest}
                 />
@@ -1273,9 +1369,33 @@ function App() {
                       }}
                       className="h-8 text-center text-xs w-14 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
-                    <span className="text-[10px] text-muted-foreground font-semibold">min</span>
                   </div>
                 </div>
+              </div>
+
+              {/* App Data Folder Section */}
+              <div className="p-3 bg-muted/30 rounded-lg border border-border flex items-center justify-between select-none">
+                <div className="min-w-0 pr-2">
+                  <h4 className="text-xs font-semibold">
+                    App Data Directory
+                  </h4>
+                  <p className="text-[9px] text-muted-foreground mt-0.5">
+                    Reveal database, downloads, and app logs on disk.
+                  </p>
+                </div>
+                <button
+                  onClick={async () => {
+                    try {
+                      await invoke("open_app_data_folder");
+                    } catch (err) {
+                      alert(`Failed to open folder: ${err}`);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 text-[10px] font-bold text-primary hover:text-primary/80 bg-primary/10 border border-primary/20 hover:bg-primary/15 px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer"
+                >
+                  <FolderOpen size={12} />
+                  Open
+                </button>
               </div>
             </div>
 

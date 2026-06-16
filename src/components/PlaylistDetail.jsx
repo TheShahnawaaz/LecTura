@@ -1,10 +1,11 @@
 import React, { useEffect, useRef } from "react";
 import { PlayerView } from "./PlayerView";
-import { Download, CheckCircle2, Loader2, FileVideo, X, Play, Copy, ExternalLink, Circle } from "lucide-react";
+import { Download, CheckCircle2, Loader2, FileVideo, X, Play, Copy, ExternalLink, Circle, FolderOpen, Trash2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { useContextMenu } from "../context/ContextMenuContext";
 import { open as openBrowser } from "@tauri-apps/api/shell";
+import { invoke } from "@tauri-apps/api/tauri";
 
 export function PlaylistDetail({
   selectedPlaylist,
@@ -19,6 +20,7 @@ export function PlaylistDetail({
   handleSelectVideo,
   handleCancelVideoDownload,
   handleCancelPlaylistDownload,
+  handleDeleteVideoFile,
   onStudyTimeLogged,
   seekRequest,
 }) {
@@ -92,6 +94,24 @@ export function PlaylistDetail({
         danger: true,
         action: () => handleCancelVideoDownload(video),
       },
+      isDownloaded && { type: "separator" },
+      isDownloaded && {
+        icon: FolderOpen,
+        label: navigator.userAgent.includes("Mac") ? "Reveal in Finder" : "Show in Explorer",
+        action: async () => {
+          try {
+            await invoke("reveal_in_explorer", { path: video.local_path });
+          } catch (err) {
+            alert(`Failed to reveal file: ${err}`);
+          }
+        },
+      },
+      isDownloaded && {
+        icon: Trash2,
+        label: "Remove Offline Video",
+        danger: true,
+        action: () => handleDeleteVideoFile(video),
+      },
       { type: "separator" },
       {
         icon: Copy,
@@ -105,7 +125,7 @@ export function PlaylistDetail({
         disabled: !video.url,
         action: () => video.url && openBrowser(video.url),
       },
-    ]);
+    ].filter(Boolean));
   };
 
   // Compute overall course progress

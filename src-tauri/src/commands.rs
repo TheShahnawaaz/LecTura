@@ -1232,7 +1232,7 @@ async fn download_video_inner(
     
     let mut args = vec![
         "-f".to_string(), 
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best".to_string(),
+        "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4]/best".to_string(),
     ];
 
     if let Some(ffmpeg_path) = get_ffmpeg_path(&app_handle) {
@@ -1813,4 +1813,342 @@ pub fn get_youtube_thumbnail_base64(video_id: String) -> Result<String, String> 
     let base64_str = general_purpose::STANDARD.encode(&bytes);
     let data_url = format!("data:image/jpeg;base64,{}", base64_str);
     Ok(data_url)
+}
+
+#[tauri::command]
+pub fn open_app_data_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let app_dir = app_handle.path_resolver().app_data_dir().ok_or("No app data directory")?;
+    if !app_dir.exists() {
+        std::fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        Command::new("explorer")
+            .arg(&app_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let db_path = app_dir.join("lectura.db");
+        if db_path.exists() {
+            Command::new("open")
+                .args(&["-R", db_path.to_str().unwrap()])
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        } else {
+            Command::new("open")
+                .args(&["-R", app_dir.to_str().unwrap()])
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        Command::new("xdg-open")
+            .arg(&app_dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reveal_in_explorer(path: String) -> Result<(), String> {
+    let path_buf = std::path::Path::new(&path);
+    if !path_buf.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        Command::new("explorer")
+            .args(&["/select,", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        Command::new("open")
+            .args(&["-R", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        let parent = path_buf.parent().ok_or("No parent directory")?.to_string_lossy().to_string();
+        Command::new("xdg-open")
+            .arg(&parent)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn verify_file_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
+#[tauri::command]
+pub fn delete_video_file(pool: State<'_, DbPool>, video_id: String) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+
+    // 1. Get the local path
+    let local_path: Option<String> = conn.query_row(
+        "SELECT local_path FROM videos WHERE id = ?1",
+        [&video_id],
+        |row| row.get(0)
+    ).map_err(|e| e.to_string())?;
+
+    // 2. Delete file if it exists
+    if let Some(path) = local_path {
+        if !path.is_empty() {
+            let path_buf = std::path::Path::new(&path);
+            if path_buf.exists() {
+                let _ = std::fs::remove_file(path_buf);
+            }
+        }
+    }
+
+    // 3. Reset database record
+    conn.execute(
+        "UPDATE videos SET download_status = 'none', download_progress = 0, local_path = NULL WHERE id = ?1",
+        [&video_id],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OrphanFile {
+    pub file_name: String,
+    pub file_path: String,
+    pub file_size_bytes: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MissingFile {
+    pub video_id: String,
+    pub video_title: String,
+    pub playlist_id: Option<String>,
+    pub expected_path: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HealthyFile {
+    pub video_id: String,
+    pub video_title: String,
+    pub playlist_id: Option<String>,
+    pub file_path: String,
+    pub file_size_bytes: u64,
+}
+
+fn dir_size(path: &std::path::Path) -> u64 {
+    if !path.exists() {
+        return 0;
+    }
+    if path.is_file() {
+        return path.metadata().map(|m| m.len()).unwrap_or(0);
+    }
+    let mut total = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                total += dir_size(&entry.path());
+            }
+        }
+    }
+    total
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StorageReport {
+    pub orphaned_files: Vec<OrphanFile>,
+    pub missing_files: Vec<MissingFile>,
+    pub healthy_files: Vec<HealthyFile>,
+    pub total_orphaned_size_bytes: u64,
+    pub total_healthy_size_bytes: u64,
+    pub db_file_size_bytes: u64,
+    pub app_dir_size_bytes: u64,
+    pub ffmpeg_ready: bool,
+    pub ytdlp_ready: bool,
+}
+
+#[tauri::command]
+pub fn scan_storage(app_handle: tauri::AppHandle, pool: State<'_, DbPool>) -> Result<StorageReport, String> {
+    let app_dir = app_handle.path_resolver().app_data_dir().ok_or("No app data directory")?;
+    let downloads_dir = app_dir.join("downloads");
+    
+    // 1. Fetch all videos with download_status = 'completed' or local_path is not null from DB
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, title, local_path, playlist_id FROM videos WHERE download_status = 'completed' OR local_path IS NOT NULL"
+    ).map_err(|e| e.to_string())?;
+    
+    struct DbVideo {
+        id: String,
+        title: String,
+        local_path: Option<String>,
+        playlist_id: Option<String>,
+    }
+    
+    let db_videos_iter = stmt.query_map([], |row| {
+        Ok(DbVideo {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            local_path: row.get(2)?,
+            playlist_id: row.get(3)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    
+    let mut db_videos = Vec::new();
+    for v in db_videos_iter {
+        if let Ok(video) = v {
+            db_videos.push(video);
+        }
+    }
+    
+    // 2. Scan downloads directory on disk
+    let mut files_on_disk = Vec::new();
+    let mut total_orphaned_size_bytes = 0;
+    let mut total_healthy_size_bytes = 0;
+    
+    if downloads_dir.exists() && downloads_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&downloads_dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        // Ignore hidden files
+                        if !file_name.starts_with('.') {
+                            let metadata = entry.metadata().ok();
+                            let file_size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
+                            let file_path = path.to_string_lossy().to_string();
+                            files_on_disk.push((file_name, file_path, file_size_bytes));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // 3. Find orphaned files (on disk, but not linked in DB)
+    let mut orphaned_files = Vec::new();
+    for (file_name, file_path, file_size_bytes) in &files_on_disk {
+        let is_linked = db_videos.iter().any(|v| {
+            if let Some(ref l_path) = v.local_path {
+                l_path == file_path || std::path::Path::new(l_path) == std::path::Path::new(file_path)
+            } else {
+                false
+            }
+        });
+        
+        if !is_linked {
+            orphaned_files.push(OrphanFile {
+                file_name: file_name.clone(),
+                file_path: file_path.clone(),
+                file_size_bytes: *file_size_bytes,
+            });
+            total_orphaned_size_bytes += file_size_bytes;
+        }
+    }
+    
+    // 4. Find missing files and healthy files
+    let mut missing_files = Vec::new();
+    let mut healthy_files = Vec::new();
+    for v in &db_videos {
+        if let Some(ref l_path) = v.local_path {
+            let path_buf = std::path::Path::new(l_path);
+            if !path_buf.exists() {
+                missing_files.push(MissingFile {
+                    video_id: v.id.clone(),
+                    video_title: v.title.clone(),
+                    playlist_id: v.playlist_id.clone(),
+                    expected_path: l_path.clone(),
+                });
+            } else {
+                let file_size_bytes = path_buf.metadata().ok().map(|m| m.len()).unwrap_or(0);
+                total_healthy_size_bytes += file_size_bytes;
+                healthy_files.push(HealthyFile {
+                    video_id: v.id.clone(),
+                    video_title: v.title.clone(),
+                    playlist_id: v.playlist_id.clone(),
+                    file_path: l_path.clone(),
+                    file_size_bytes,
+                });
+            }
+        } else {
+            missing_files.push(MissingFile {
+                video_id: v.id.clone(),
+                video_title: v.title.clone(),
+                playlist_id: v.playlist_id.clone(),
+                expected_path: String::from("No path stored"),
+            });
+        }
+    }
+    
+    // 5. Gather additional details
+    let db_path = app_dir.join("lectura.db");
+    let db_file_size_bytes = db_path.metadata().map(|m| m.len()).unwrap_or(0);
+    let app_dir_size_bytes = dir_size(&app_dir);
+    let ytdlp_ready = check_ytdlp_ready();
+    let ffmpeg_ready = check_ffmpeg_ready(&app_handle);
+
+    Ok(StorageReport {
+        orphaned_files,
+        missing_files,
+        healthy_files,
+        total_orphaned_size_bytes,
+        total_healthy_size_bytes,
+        db_file_size_bytes,
+        app_dir_size_bytes,
+        ffmpeg_ready,
+        ytdlp_ready,
+    })
+}
+
+#[tauri::command]
+pub fn clean_storage(
+    pool: State<'_, DbPool>,
+    delete_orphans: Vec<String>,
+    heal_missing_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+
+    // 1. Delete orphan files
+    for path_str in delete_orphans {
+        let path = std::path::Path::new(&path_str);
+        if path.exists() && path.is_file() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    // 2. Heal missing records in DB
+    if !heal_missing_ids.is_empty() {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for video_id in heal_missing_ids {
+            tx.execute(
+                "UPDATE videos SET download_status = 'none', download_progress = 0, local_path = NULL WHERE id = ?1",
+                [&video_id],
+            ).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
