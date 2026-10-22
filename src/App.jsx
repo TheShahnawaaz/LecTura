@@ -1,3 +1,5 @@
+import { StudySharingNotice } from "./components/StudySharingNotice";
+import { BatchDelivery } from "./lib/studyClock.mjs";
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { listen } from "@tauri-apps/api/event";
@@ -54,6 +56,11 @@ import {
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
 function App() {
+  useEffect(() => {
+    const wake = () => { invoke("study_sync_wake").catch(() => {}); };
+    window.addEventListener("online", wake);
+    return () => window.removeEventListener("online", wake);
+  }, []);
   // Theme & Collapse States
   const [theme, setTheme] = useState(
     () => localStorage.getItem("lectura-theme") || "dark"
@@ -407,29 +414,15 @@ function App() {
     }
   };
 
-  const handleLogStudyTime = async (videoId, seconds) => {
-    try {
-      await invoke("log_study_time", { videoId, durationSeconds: seconds });
-      // Update local study_time for the video in State in real-time
-      setVideos((prev) =>
-        prev.map((v) =>
-          v.id === videoId
-            ? { ...v, study_time: (v.study_time || 0) + seconds }
-            : v
-        )
-      );
-      setActiveVideo((prev) => {
-        if (prev && prev.id === videoId) {
-          return { ...prev, study_time: (prev.study_time || 0) + seconds };
-        }
-        return prev;
-      });
-      // Don't call fetchStudyStats() here — it triggers App re-renders that
-      // destabilize the heartbeat timer. Stats refresh when navigating home.
-    } catch (err) {
-      console.error("Failed to log study time:", err);
-    }
-  };
+  const studyDeliveryRef = useRef(null);
+  if (!studyDeliveryRef.current) studyDeliveryRef.current = new BatchDelivery(async batch => {
+    const inserted = await invoke("log_study_time", { batch });
+    if (!inserted) return;
+    const seconds = batch.focusedMilliseconds / 1000;
+    setVideos(prev => prev.map(v => v.id === batch.videoId ? { ...v, study_time: (v.study_time || 0) + seconds } : v));
+    setActiveVideo(prev => prev?.id === batch.videoId ? { ...prev, study_time: (prev.study_time || 0) + seconds } : prev);
+  });
+  const handleLogStudyTime = batch => studyDeliveryRef.current.add(batch);
 
   const checkSystemStatus = async () => {
     try {
@@ -881,10 +874,11 @@ function App() {
     }
   };
 
-  const handleUpdateProgress = async (videoId, seconds, isCompleted) => {
+  const handleUpdateProgress = async (videoId, seconds, isCompleted, courseId) => {
     try {
       await invoke("update_video_progress", {
         videoId,
+        courseId,
         seconds,
         isCompleted,
       });
@@ -989,6 +983,7 @@ function App() {
     <div className={`flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground transition-colors duration-300 relative ${
       draggedItem ? "app-dragging" : ""
     }`}>
+      <StudySharingNotice />
       {/* Main Layout Row Container */}
       <div className="flex flex-1 overflow-hidden relative">
         {/* ───── 1. COLLAPSIBLE SIDEBAR ───── */}

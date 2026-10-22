@@ -1,0 +1,74 @@
+# Operator runbook
+
+## Approved closed setup (2026-10-22)
+
+The Free Worker is deployed at `https://lectura-study-sync.lectura-private-study-worker.workers.dev`. D1 `lectura-study-sync` has migration `0001_sync.sql` applied; its public database ID is in `cloud/worker/wrangler.toml`. Registration remains closed, with no learner installations or study records. The two rate-limit bindings use dedicated random public namespace identifiers. No paid plan, custom domain, merge, installer release or real learner upload was performed.
+
+The independent application-admin credential is stored in this Mac's encrypted, non-synchronizing Keychain under service `com.lectura.study-sync.admin`, account `lectura-study-sync`. Only its SHA-256 hash is configured as the Worker secret `ADMIN_TOKEN_HASH`. Wrangler's separate OAuth credential is also encrypted with a Keychain-held key. Neither credential belongs in Git or learner configuration.
+
+From the repository root on this Mac, using Node 22 and the installed Apple compiler tools:
+
+```sh
+export PATH=/opt/homebrew/bin:$PATH
+export LECTURA_ADMIN_ORIGIN=https://lectura-study-sync.lectura-private-study-worker.workers.dev
+npm run admin:macos -- check
+npm run admin:macos
+```
+
+Open **http://127.0.0.1:4179/**. The launcher compiles an ignored local Security.framework helper, reads the Keychain credential directly into memory and passes it through an anonymous child-process pipe. The browser never receives it. Close the terminal process when finished. macOS may require the user to approve access to the dedicated Keychain entry. `check` deliberately expects a pristine closed setup; after real enrollment it will fail its empty-data assertions.
+
+The helper's `create` and `configure` actions are explicit provisioning operations, not normal startup steps. `create` refuses to overwrite an existing or unreadable entry. `configure` sends only the stored credential's hash to Wrangler over stdin; it requires separately authorized Cloudflare access with `CLOUDFLARE_AUTH_USE_KEYRING=true` and the intended account selected. Do not rerun either as a recovery shortcut. Rotation needs an explicitly reviewed replacement procedure.
+
+The public build recipient label is **LecTura administrator**, as selected by the operator without personal contact details. Public build variables do not update existing installers. Registration must stay closed until the remaining rollout gates below are resolved.
+
+## Stable installer publication
+
+The release workflow builds Apple Silicon Mac, Intel Mac and Windows installers from a stable `vMAJOR.MINOR.PATCH` tag. It now creates a **draft** GitHub release. After every platform build succeeds, the updater job requires all three updater archives and verifies their Minisign signatures against the existing public key in `src-tauri/tauri.conf.json`. Only then does it upload `latest.json` to that draft. Windows retains the MSI updater format used by the previous stable feed.
+
+Publishing the fully verified draft as the latest stable release is a separate authorized operator action. It makes the configured `releases/latest/download/latest.json` endpoint offer the new version to existing installations. Keep the current signing key; changing it would break verification in installed apps. The update prompt and release notes disclose default-enabled sharing and the pause control. Updating the app does not approve its installation or open registration.
+
+Real rollout requires separate authorization. Resolve recipient identity/contact, expected users/hours, appropriate requirements if minors are involved, privacy wording and retention review first. Learner ages remain unknown until established appropriately.
+
+## Configuration and access
+
+Keep Workers/D1 on Free. `cloud/worker/wrangler.toml` now identifies the approved database and dedicated rate-limit namespaces; copying it into another account requires selecting that account's database and unused namespace identifiers. Rate limiting is approximate per Cloudflare location; the atomic D1 registration/event budgets are separate global controls. Enrollment/auth fail closed if rate-limit bindings are absent.
+
+The operator must provision an independent high-entropy application-admin bearer credential and store only its SHA-256 hash in the Worker's `ADMIN_TOKEN_HASH` secret. This is not a Cloudflare account API key. Do not put a raw admin credential in `.env`, shell history, a URL, frontend storage or the learner build. Rotate by replacing the server hash and restarting the local proxy with the new credential; all old admin access then fails. Never log request bodies or Authorization. Worker observability is disabled in the example configuration to avoid default body/credential logging; separately review platform logging and provider data processing.
+
+After the operator has separately provisioned and reviewed the service, build the learner app with `LECTURA_SYNC_ORIGIN` set to the fixed HTTPS origin and `LECTURA_SYNC_RECIPIENT` set to the intended administrator's understandable identity/contact. No learner URL, login, invite, pairing code or settings step exists. Leaving this configuration absent keeps the network sender inactive, while sharing remains the visible default preference.
+
+These are Rust compile-time values, not `VITE_*` settings or variables that can configure an existing installer at launch. The tag-only release workflow passes the GitHub repository variables with these exact names to the native build and validates them before packaging; unset or invalid values fail the release job. Both values are public build configuration, never administrator credentials. Obtain the operator's chosen public recipient label before setting that variable. Setting repository variables does not itself build, publish or release the app.
+
+For the actual local admin proxy, set only the public service origin, then enter the dedicated credential interactively:
+
+```sh
+LECTURA_ADMIN_ORIGIN=https://YOUR_REVIEWED_WORKER_HOST node admin-local/server.mjs
+```
+
+The proxy requires a TTY and stores the entered credential only in process memory. Close the process when finished. It never binds to the LAN. Phone/LAN access is a separate authentication/networking design.
+
+## Enrollment, replacement and revocation
+
+Open a short registration window only when expecting a learner. The learner provides a display name, sees what is shared and with whom, and can pause. Verify the pending installation out of band; names alone are insufficient. Approve as a new learner unless explicitly replacing a verified prior installation. Use the exact learner ID shown in the learner card for replacement; review the warning. Replacement atomically revokes prior installations and preserves historical ownership. Repeated approval is a conflict rather than creating another learner.
+
+To handle a lost laptop, revoke its installation and close the registration window. Existing unsent activity on that laptop cannot silently pass the approval guard. A true wipe generates a new installation/secret; never recover ownership by name or hardware fingerprint. A paused installation must resume with a new sharing epoch. Revoked/rejected approval cannot be restored by learner controls.
+
+## Outages and recovery
+
+Offline study is saved to SQLite first. Network/5xx errors persist exponential backoff with jitter; 429 observes bounded `Retry-After`; 401/403 suspends uploads and checks status conservatively. Unknown acknowledgments retain the queue. Partial acks mark only sent IDs explicitly acknowledged. 413 reduces the batch size. A single oversized/invalid event is blocked; an immutable conflict quarantines the affected request (which may contain several events) for operator inspection. Do not replace event IDs to work around conflicts or delete receipt keys to “fix totals.”
+
+An enrollment secret lost from the OS store is not recoverable through the display name. Preserve the local database and OS credential entry together. Migration creates `lectura.pre-sync-<timestamp>.db` alongside the original DB using SQLite's online backup. To roll back, close the app, retain the newer DB separately, restore the backup into a synthetic copy first, and verify with the compatible old app version before replacing a real database. Never operate on a running user's DB or include the credential store in a shared backup.
+
+## Retention, export and restore
+
+The scheduled retention handler prunes bounded batches. Observe backlog and storage growth; review a separately authorized maintenance change if 1,000/day cannot keep up with retention needs. The hard 30-day accepted-event age and 90-day ledger are coupled; do not relax event age after deleting deduplication receipts. Keep locally blocked old events for a reviewed reconciliation process that preserves immutable IDs.
+
+Before destructive server migrations, an authorized operator should use Cloudflare's documented D1 export facility to produce a local SQL export, store it in a protected location, and import into a separate synthetic/local D1 instance to verify learners, snapshots, receipt uniqueness and rollup totals. This repository's `tests/backup-restore.test.mjs` exercises the schema/receipt behavior through SQLite export/restore; it is not a production backup. Time Travel is additional recovery assistance, not the whole backup strategy. Do not auto-upload exports to other services or enable paid storage.
+
+## Capacity policy and known limits
+
+The default per-service caps are 20 pending installations, 50 new registrations/day, and 6,000 accepted new events/day; enrollment windows are at most 60 minutes. These caps are conservative controls, not a guarantee of free-tier eligibility. Idempotent replay does not consume the new-event budget. Existing approved devices work outside the enrollment window.
+
+One 8-hour learner generates roughly 2,880 ten-second study events plus coalesced progress. The 6,000-event cap may intentionally defer two heavy users. Each accepted event performs receipt, study/rollup/progress, counter and index work; database billing can count index effects and differs from SQL statement count. The local ten-event fixture reported 121 rows written and 119 read on the ingestion trigger path; this is emulated evidence only. Measure actual account rows read/written, storage and Worker CPU, maintain headroom, and aggregate more coarsely through a reviewed change if needed. Exhaustion should preserve local data and fail closed, never trigger a paid upgrade. The health screen shows app counters, not account-wide Cloudflare quota headroom or exact error telemetry.
+
+Primary implementation references: [D1 atomic batches](https://developers.cloudflare.com/d1/worker-api/d1-database/), [rate-limit bindings and their accuracy](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/), [D1 export/import](https://developers.cloudflare.com/d1/best-practices/import-export-data/). Re-check current account limits and eligibility during authorized provisioning.

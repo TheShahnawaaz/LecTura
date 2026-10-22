@@ -1,93 +1,162 @@
-const { execSync } = require('child_process');
-const fs = require('fs');
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
-const tagName = process.env.TAG_NAME;
-const repo = process.env.GITHUB_REPOSITORY; // format: owner/repo
-if (!tagName) {
-  console.error("TAG_NAME environment variable is required");
-  process.exit(1);
+function releaseIdentity(tag, repo) {
+  if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag || ""))
+    throw new Error("A stable vMAJOR.MINOR.PATCH tag is required");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo || ""))
+    throw new Error("An explicit GitHub owner/repository is required");
+  return tag.slice(1);
 }
-if (!repo) {
-  console.error("GITHUB_REPOSITORY environment variable is required");
-  process.exit(1);
+
+function selectUpdaterAssets(assets) {
+  const names = new Map();
+  for (const asset of assets) {
+    if (!/^[A-Za-z0-9_.-]+$/.test(asset.name) || names.has(asset.name))
+      throw new Error("Unsafe or duplicate release asset name");
+    names.set(asset.name, asset);
+  }
+  const targets = {
+    "darwin-aarch64": /aarch64\.app\.tar\.gz$/,
+    "darwin-x86_64": /(?:x64|x86_64)\.app\.tar\.gz$/,
+    // Preserve the existing stable feed's MSI updater format for Windows.
+    "windows-x86_64": /(?:x64|x86_64).*\.msi\.zip$/,
+  };
+  const selected = {};
+  for (const [target, pattern] of Object.entries(targets)) {
+    const matches = assets.filter((asset) => pattern.test(asset.name));
+    if (matches.length !== 1)
+      throw new Error(`Expected exactly one updater bundle for ${target}`);
+    const bundle = matches[0];
+    const signature = names.get(bundle.name + ".sig");
+    if (!signature || !(bundle.size > 0) || !(signature.size > 0))
+      throw new Error(`Missing or empty signed updater for ${target}`);
+    selected[target] = { bundle, signature };
+  }
+  return selected;
 }
 
-const version = tagName.replace(/^v/, '');
+function buildManifest(tag, repo, selected, signatures, date = new Date()) {
+  const version = releaseIdentity(tag, repo);
+  const platforms = {};
+  for (const [target, { bundle }] of Object.entries(selected)) {
+    const signature = signatures[target]?.trim();
+    if (
+      !signature ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(signature) ||
+      !Buffer.from(signature, "base64")
+        .toString("utf8")
+        .startsWith("untrusted comment:")
+    )
+      throw new Error(`Invalid encoded signature for ${target}`);
+    platforms[target] = {
+      signature,
+      url: `https://github.com/${repo}/releases/download/${tag}/${bundle.name}`,
+    };
+  }
+  if (
+    Object.keys(platforms).sort().join(",") !==
+    "darwin-aarch64,darwin-x86_64,windows-x86_64"
+  )
+    throw new Error("All three supported updater targets are required");
+  return {
+    version,
+    notes: `LecTura ${tag}: Adds study sharing, enabled by default, with a visible notice and pause control. Administrator approval is required before study-data uploads. Notes, screenshots and files remain local.`,
+    pub_date: date.toISOString(),
+    platforms,
+  };
+}
 
-// Run gh command to get all assets of the release
-console.log(`Fetching release assets for tag ${tagName}...`);
-const output = execSync(`gh release view ${tagName} --json assets`, { encoding: 'utf8' });
-const { assets } = JSON.parse(output);
-
-console.log("Found assets in release:", assets.map(a => a.name));
-
-const platforms = {};
-
-// We want to process each signature file
-for (const asset of assets) {
-  if (asset.name.endsWith('.sig')) {
-    const sigFileName = asset.name;
-    const targetFileName = sigFileName.slice(0, -4); // Remove .sig
-    
-    // Find the corresponding binary asset
-    const targetAsset = assets.find(a => a.name === targetFileName);
-    if (!targetAsset) {
-      console.warn(`Corresponding asset for signature ${sigFileName} not found, skipping.`);
-      continue;
+function main() {
+  const tag = process.env.TAG_NAME;
+  const repo = process.env.GITHUB_REPOSITORY;
+  const version = releaseIdentity(tag, repo);
+  if (JSON.parse(fs.readFileSync("package.json", "utf8")).version !== version)
+    throw new Error("Release tag and checked-out application version differ");
+  const verifier = process.env.LECTURA_UPDATER_VERIFIER;
+  if (!verifier || !fs.existsSync(verifier))
+    throw new Error("The trusted Minisign verifier is required");
+  const release = JSON.parse(
+    execFileSync(
+      "gh",
+      [
+        "release",
+        "view",
+        tag,
+        "--repo",
+        repo,
+        "--json",
+        "isDraft,assets,tagName",
+      ],
+      { encoding: "utf8" },
+    ),
+  );
+  if (!release.isDraft || release.tagName !== tag)
+    throw new Error(
+      "Updater preparation only writes to the matching draft release",
+    );
+  const selected = selectUpdaterAssets(release.assets);
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "lectura-updater-"));
+  try {
+    const publicKey = JSON.parse(
+      fs.readFileSync("src-tauri/tauri.conf.json", "utf8"),
+    ).tauri.updater.pubkey;
+    const publicKeyPath = path.join(temporary, "updater.pub");
+    fs.writeFileSync(publicKeyPath, Buffer.from(publicKey, "base64"));
+    const signatures = {};
+    for (const [target, { bundle, signature }] of Object.entries(selected)) {
+      for (const asset of [bundle, signature])
+        execFileSync(
+          "gh",
+          [
+            "release",
+            "download",
+            tag,
+            "--repo",
+            repo,
+            "--pattern",
+            asset.name,
+            "--dir",
+            temporary,
+          ],
+          { stdio: "inherit" },
+        );
+      const encoded = fs
+        .readFileSync(path.join(temporary, signature.name), "utf8")
+        .trim();
+      const decodedPath = path.join(temporary, signature.name + ".decoded");
+      fs.writeFileSync(decodedPath, Buffer.from(encoded, "base64"));
+      execFileSync(
+        verifier,
+        [publicKeyPath, decodedPath, path.join(temporary, bundle.name)],
+        { stdio: "inherit" },
+      );
+      signatures[target] = encoded;
+      console.log(`Verified ${target}: ${bundle.name}`);
     }
-    
-    // Download the .sig file to read its contents
-    console.log(`Downloading signature: ${sigFileName}`);
-    execSync(`gh release download ${tagName} -p "${sigFileName}" --clobber`);
-    
-    const signature = fs.readFileSync(sigFileName, 'utf8').trim();
-    
-    // Determine platform from filename
-    // Standard Tauri v1 updater targets:
-    // macOS Apple Silicon: LecTura_0.1.0_aarch64.app.tar.gz.sig
-    // macOS Intel: LecTura_0.1.0_x64.app.tar.gz.sig
-    // Windows x86_64: LecTura_0.1.0_x64_en-US.msi.zip.sig
-    let platformKey = null;
-    if (sigFileName.includes('aarch64.app.tar.gz')) {
-      platformKey = 'darwin-aarch64';
-    } else if (sigFileName.includes('x64.app.tar.gz')) {
-      platformKey = 'darwin-x86_64';
-    } else if (sigFileName.includes('msi.zip') && (sigFileName.includes('x64') || sigFileName.includes('x86_64'))) {
-      platformKey = 'windows-x86_64';
-    } else if (sigFileName.includes('nsis.zip') && (sigFileName.includes('x64') || sigFileName.includes('x86_64'))) {
-      platformKey = 'windows-x86_64';
-    }
-    
-    if (platformKey) {
-      platforms[platformKey] = {
-        signature: signature,
-        url: `https://github.com/${repo}/releases/download/${tagName}/${targetFileName}`
-      };
-      console.log(`Added platform ${platformKey} with URL: ${platforms[platformKey].url}`);
-    } else {
-      console.warn(`Could not determine platform for signature file: ${sigFileName}`);
-    }
-    
-    // Clean up local signature file
-    try {
-      fs.unlinkSync(sigFileName);
-    } catch (err) {}
+    const manifest = buildManifest(tag, repo, selected, signatures);
+    fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2) + "\n");
+    execFileSync(
+      "gh",
+      ["release", "upload", tag, "latest.json", "--repo", repo, "--clobber"],
+      { stdio: "inherit" },
+    );
+    console.log(
+      "All updater packages verified; latest.json uploaded to the draft. Publication remains a separate action.",
+    );
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
   }
 }
 
-// Build the latest.json structure
-const latestJson = {
-  version: version,
-  notes: `LecTura Release ${tagName}`,
-  pub_date: new Date().toISOString(),
-  platforms: platforms
-};
-
-console.log("Generated latest.json:", JSON.stringify(latestJson, null, 2));
-
-fs.writeFileSync('latest.json', JSON.stringify(latestJson, null, 2));
-
-// Upload to GitHub release
-console.log("Uploading latest.json to release...");
-execSync(`gh release upload ${tagName} latest.json --clobber`);
-console.log("Upload completed successfully!");
+module.exports = { releaseIdentity, selectUpdaterAssets, buildManifest };
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
+}

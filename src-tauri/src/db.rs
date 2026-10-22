@@ -84,6 +84,8 @@ const MIGRATIONS: &[&str] = &[
     // Version 7: placeholder — actual migration handled programmatically in run_migrations
     // to safely add notes, screenshot_path, and is_doubt columns one at a time.
     r#""#,
+    include_str!("../migrations/0008_study_sync.sql"),
+    include_str!("../migrations/0009_course_memberships.sql"),
 ];
 
 pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> {
@@ -93,6 +95,15 @@ pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> 
     }
     
     path.push("lectura.db");
+    if path.exists() {
+        // SQLite's online backup includes committed WAL data and never reads a live file naively.
+        let source = Connection::open(&path)?;
+        let version: i32 = source.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < 9 {
+            let backup_path = path.with_extension(format!("pre-sync-{}.db", crate::study_sync::now()));
+            source.backup(rusqlite::DatabaseName::Main, &backup_path, None)?;
+        }
+    }
     
     let manager = SqliteConnectionManager::file(path)
         .with_init(|conn| conn.execute_batch("PRAGMA foreign_keys = ON;"));
@@ -107,7 +118,7 @@ pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> 
     Ok(pool)
 }
 
-fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
+pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
     let mut current_version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     
     for (i, migration) in MIGRATIONS.iter().enumerate() {

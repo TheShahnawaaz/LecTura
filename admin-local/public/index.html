@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>LecTura · Private study dashboard</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <span class="eyebrow">LECTURA / PRIVATE ADMIN</span>
+        <h1>Study, over time.</h1>
+        <p>Focused study time and playback progress · UTC reporting</p>
+      </div>
+      <button id="refresh">Refresh</button>
+    </header>
+    <main>
+      <p class="notice" id="mode">Loading…</p>
+      <p id="error" role="alert"></p>
+      <nav>
+        <button data-view="overview">Learners</button
+        ><button data-view="enrollments">Enrollment review</button
+        ><button data-view="health">Service health</button>
+      </nav>
+      <section id="overview">
+        <div class="section-heading">
+          <h2>Learners</h2>
+          <span>Names are self-supplied and unverified</span>
+        </div>
+        <div id="learners" class="cards"></div>
+        <div id="learner-paging"></div>
+      </section>
+      <section id="detail" hidden>
+        <button id="back">← All learners</button>
+        <h2 id="detail-title">Study detail</h2>
+        <label
+          >Period
+          <select id="days">
+            <option value="7">Last 7 days</option>
+            <option value="1">Last day</option>
+            <option value="30">Last 30 days</option>
+          </select></label
+        >
+        <div id="activity"></div>
+      </section>
+      <section id="enrollments" hidden>
+        <h2>Enrollment review</h2>
+        <p>
+          Verify the intended laptop out of band before approval. Matching names
+          never establish identity.
+        </p>
+        <button id="open-window">Open registration for 15 minutes</button
+        ><button id="close-window">Close registration</button>
+        <div id="pending" class="cards"></div>
+        <div id="enrollment-paging"></div>
+      </section>
+      <section id="health" hidden>
+        <h2>Service health</h2>
+        <div id="health-info"></div>
+        <button id="kill-switch">Pause ingestion</button>
+        <p>
+          Cloudflare account quota headroom must be reviewed separately. These
+          counters cover this application only.
+        </p>
+      </section>
+      <footer>
+        Recent reports describe the last received activity, not live presence or
+        proof of learning. Notes, screenshots, files and local paths are
+        excluded.
+      </footer>
+    </main>
+  </body>
+</html>

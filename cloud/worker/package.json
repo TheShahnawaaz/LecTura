@@ -1,0 +1,7 @@
+{
+  "name": "lectura-private-study-worker",
+  "private": true,
+  "type": "module",
+  "scripts": { "test:runtime": "node --test ../../tests/d1-runtime.test.mjs" },
+  "devDependencies": { "wrangler": "4.152.0" }
+}
