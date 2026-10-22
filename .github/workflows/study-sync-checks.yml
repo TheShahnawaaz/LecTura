@@ -1,8 +1,6 @@
 name: Study sync checks
 on:
   pull_request:
-  push:
-    branches: [feat/private-study-sync]
 permissions:
   contents: read
 concurrency:
