@@ -1,0 +1,27 @@
+name = "lectura-study-sync"
+main = "index.mjs"
+compatibility_date = "2026-10-01"
+workers_dev = true
+[observability]
+enabled = false
+# Provision only after separate approval. Keep on Workers Free; never add billing here.
+[[d1_databases]]
+binding = "DB"
+database_name = "lectura-study-sync"
+database_id = "REPLACE_ONLY_AFTER_APPROVED_PROVISIONING"
+migrations_dir = "migrations"
+# ADMIN_TOKEN_HASH must be an independently provisioned application-admin SHA-256 secret.
+# Configure Cloudflare rate-limit bindings ENROLL_RATE and AUTH_RATE before enabling the service.
+# Without both bindings, public enrollment and device auth fail closed.
+[triggers]
+crons = ["17 3 * * *"]
+
+# Public namespace identifiers are examples, not credentials. Verify uniqueness before rollout.
+[[ratelimits]]
+name = "ENROLL_RATE"
+namespace_id = "1001"
+simple = { limit = 5, period = 60 }
+[[ratelimits]]
+name = "AUTH_RATE"
+namespace_id = "1002"
+simple = { limit = 120, period = 60 }

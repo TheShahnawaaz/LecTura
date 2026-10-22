@@ -1,0 +1,9 @@
+{
+  "name": "lectura-synthetic-tests",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "happy-dom": "21.0.4",
+    "prettier": "3.6.2"
+  }
+}

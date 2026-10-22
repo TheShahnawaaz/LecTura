@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use tauri::{State, Manager};
 use crate::db::DbPool;
 use serde::{Serialize, Deserialize};
@@ -330,7 +331,7 @@ pub fn get_playlist_videos(pool: State<'_, DbPool>, playlist_id: String) -> Resu
     let conn = pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed, created_at,
-                (SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE video_id = videos.id) as study_time,
+                (SELECT COALESCE(CAST(SUM(duration_seconds) AS INTEGER), 0) FROM study_logs WHERE video_id = videos.id) as study_time,
                 error_log
          FROM videos WHERE playlist_id = ?1 ORDER BY created_at ASC"
     ).map_err(|e| e.to_string())?;
@@ -366,11 +367,15 @@ pub fn get_playlist_videos(pool: State<'_, DbPool>, playlist_id: String) -> Resu
 #[tauri::command]
 pub fn add_playlist_with_videos(pool: State<'_, DbPool>, playlist: Playlist, videos: Vec<Video>) -> Result<(), String> {
     let mut conn = pool.get().map_err(|e| e.to_string())?;
+    import_course(&mut conn, playlist, videos)
+}
+
+pub(crate) fn import_course(conn: &mut rusqlite::Connection, playlist: Playlist, videos: Vec<Video>) -> Result<(), String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     
     tx.execute(
-        "INSERT OR REPLACE INTO playlists (id, folder_id, title, description, thumbnail_url, url) 
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO playlists (id, folder_id, title, description, thumbnail_url, url)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,thumbnail_url=excluded.thumbnail_url,url=excluded.url",
         (
             &playlist.id,
             &playlist.folder_id,
@@ -382,9 +387,15 @@ pub fn add_playlist_with_videos(pool: State<'_, DbPool>, playlist: Playlist, vid
     ).map_err(|e| e.to_string())?;
     
     for video in videos {
+        // Explicit single-course membership: refuse ambiguous reuse rather than move a video
+        // (and its historical study/bookmark ownership) silently to a different course.
+        let old_course: Option<String> = tx.query_row("SELECT playlist_id FROM videos WHERE id=?1", [&video.id], |r| r.get::<_, Option<String>>(0)).optional().map_err(|e| e.to_string())?.flatten();
+        if old_course.as_deref().is_some_and(|id| Some(id) != video.playlist_id.as_deref()) {
+            return Err("This video already belongs to another course. Import cancelled; existing history was preserved.".into());
+        }
         tx.execute(
-            "INSERT OR REPLACE INTO videos (id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO videos (id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(id) DO UPDATE SET title=excluded.title,duration=excluded.duration,thumbnail_url=excluded.thumbnail_url,url=excluded.url",
             (
                 &video.id,
                 &video.playlist_id,
@@ -406,13 +417,9 @@ pub fn add_playlist_with_videos(pool: State<'_, DbPool>, playlist: Playlist, vid
 }
 
 #[tauri::command]
-pub fn update_video_progress(pool: State<'_, DbPool>, video_id: String, seconds: i32, is_completed: bool) -> Result<(), String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE videos SET watched_progress = ?1, is_completed = ?2 WHERE id = ?3",
-        (seconds, if is_completed { 1 } else { 0 }, &video_id),
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+pub fn update_video_progress(pool: State<'_, DbPool>, video_id: String, course_id: String, seconds: i32, is_completed: bool) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+    crate::study_sync::progress(&mut conn, &video_id, &course_id, seconds, is_completed)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -461,22 +468,22 @@ pub struct StudyStats {
 }
 
 #[tauri::command]
-pub fn log_study_time(pool: State<'_, DbPool>, video_id: String, duration_seconds: i32) -> Result<(), String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO study_logs (video_id, duration_seconds) VALUES (?1, ?2)",
-        (video_id, duration_seconds),
-    ).map_err(|e| e.to_string())?;
-    Ok(())
+pub fn log_study_time(pool: State<'_, DbPool>, batch: crate::study_sync::StudyBatch) -> Result<bool, String> {
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+    crate::study_sync::capture(&mut conn, &batch)
 }
 
 #[tauri::command]
 pub fn get_study_stats(pool: State<'_, DbPool>) -> Result<StudyStats, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
 
+    study_stats(&conn)
+}
+
+pub(crate) fn study_stats(conn: &rusqlite::Connection) -> Result<StudyStats, String> {
     // 1. Total study seconds
     let total_study_seconds: i32 = conn.query_row(
-        "SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs",
+        "SELECT COALESCE(CAST(SUM(duration_seconds) AS INTEGER), 0) FROM study_logs",
         [],
         |row| row.get(0),
     ).map_err(|e| e.to_string())?;
@@ -497,7 +504,7 @@ pub fn get_study_stats(pool: State<'_, DbPool>) -> Result<StudyStats, String> {
 
     // 4. Daily study logs
     let mut stmt = conn.prepare(
-        "SELECT date(created_at, 'localtime') as day, SUM(duration_seconds) FROM study_logs GROUP BY day"
+        "SELECT date(created_at, 'localtime') as day, CAST(SUM(duration_seconds) AS INTEGER) FROM study_logs GROUP BY day"
     ).map_err(|e| e.to_string())?;
     
     let rows = stmt.query_map([], |row| {
@@ -516,7 +523,7 @@ pub fn get_study_stats(pool: State<'_, DbPool>) -> Result<StudyStats, String> {
             l.id, l.video_id, v.title as video_title, 
             COALESCE(p.id, '') as playlist_id, 
             COALESCE(p.title, 'Unassigned Course') as playlist_title,
-            l.duration_seconds, 
+            CAST(l.duration_seconds AS INTEGER),
             datetime(l.created_at, 'localtime') as created_at
          FROM study_logs l
          JOIN videos v ON l.video_id = v.id
@@ -570,16 +577,20 @@ pub fn get_study_stats(pool: State<'_, DbPool>) -> Result<StudyStats, String> {
 pub fn get_day_study_details(pool: State<'_, DbPool>, date_str: String) -> Result<DayStudyDetails, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
 
+    day_study_details(&conn, date_str)
+}
+
+pub(crate) fn day_study_details(conn: &rusqlite::Connection, date_str: String) -> Result<DayStudyDetails, String> {
     // 1. Total seconds for that day
     let total_seconds: i32 = conn.query_row(
-        "SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE date(created_at, 'localtime') = ?1",
+        "SELECT COALESCE(CAST(SUM(duration_seconds) AS INTEGER), 0) FROM study_logs WHERE date(created_at, 'localtime') = ?1",
         [&date_str],
         |row| row.get(0),
     ).map_err(|e| e.to_string())?;
 
     // 2. Hourly activity
     let mut stmt_hourly = conn.prepare(
-        "SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) as hr, SUM(duration_seconds) 
+        "SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) as hr, CAST(SUM(duration_seconds) AS INTEGER)
          FROM study_logs 
          WHERE date(created_at, 'localtime') = ?1 
          GROUP BY hr"
@@ -603,7 +614,7 @@ pub fn get_day_study_details(pool: State<'_, DbPool>, date_str: String) -> Resul
             v.id, v.title, 
             COALESCE(p.id, '') as playlist_id, 
             COALESCE(p.title, 'Unassigned Course') as playlist_title, 
-            SUM(l.duration_seconds) as total_seconds
+            CAST(SUM(l.duration_seconds) AS INTEGER) as total_seconds
          FROM study_logs l
          JOIN videos v ON l.video_id = v.id
          LEFT JOIN playlists p ON v.playlist_id = p.id
@@ -965,7 +976,7 @@ pub fn get_library_stats(pool: State<'_, DbPool>) -> Result<Vec<PlaylistStats>, 
             SUM(watched_progress) as total_watched,
             SUM(CASE WHEN local_path IS NOT NULL THEN 1 ELSE 0 END) as downloaded_videos,
             SUM(CASE WHEN is_completed = 1 THEN COALESCE(duration, 0) ELSE 0 END) as completed_duration,
-            (SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE video_id IN (SELECT id FROM videos WHERE playlist_id = v.playlist_id)) as total_study_time
+            (SELECT COALESCE(CAST(SUM(duration_seconds) AS INTEGER), 0) FROM study_logs WHERE video_id IN (SELECT id FROM videos WHERE playlist_id = v.playlist_id)) as total_study_time
          FROM videos v
          WHERE playlist_id IS NOT NULL
          GROUP BY playlist_id"
@@ -1640,7 +1651,7 @@ pub fn get_download_queue(pool: State<'_, DbPool>) -> Result<Vec<Video>, String>
     let conn = pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed, created_at,
-                (SELECT COALESCE(SUM(duration_seconds), 0) FROM study_logs WHERE video_id = videos.id) as study_time,
+                (SELECT COALESCE(CAST(SUM(duration_seconds) AS INTEGER), 0) FROM study_logs WHERE video_id = videos.id) as study_time,
                 error_log
          FROM videos 
          WHERE download_status IN ('pending', 'downloading', 'failed')
@@ -2151,4 +2162,28 @@ pub fn clean_storage(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod sync_import_tests {
+    use super::*;
+    #[test]
+    fn reimport_preserves_history_bookmarks_paths_and_refuses_ambiguous_membership() {
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        crate::db::run_migrations(&mut c).unwrap();
+        let playlist = Playlist { id:"synthetic-course-1".into(),folder_id:None,title:"Synthetic course".into(),description:None,thumbnail_url:None,url:None,created_at:String::new() };
+        let video = Video { id:"synthetic-video-1".into(),playlist_id:Some(playlist.id.clone()),title:"Synthetic video".into(),duration:600,thumbnail_url:None,url:"https://synthetic.invalid/video".into(),local_path:None,download_status:"none".into(),download_progress:0,watched_progress:0,is_completed:false,created_at:String::new(),study_time:None,error_log:None };
+        import_course(&mut c,playlist.clone(),vec![video.clone()]).unwrap();
+        c.execute_batch("UPDATE videos SET local_path='/synthetic/private/video',download_status='completed',watched_progress=123,is_completed=1;INSERT INTO study_logs(video_id,duration_seconds) VALUES('synthetic-video-1',25);INSERT INTO bookmarks(video_id,timestamp,notes,screenshot_path) VALUES('synthetic-video-1',10,'private synthetic note','/synthetic/private/screenshot')").unwrap();
+        let mut renamed=playlist.clone();renamed.title="Updated course".into();
+        import_course(&mut c,renamed,vec![video.clone()]).unwrap();
+        let kept:(String,i32,bool)=c.query_row("SELECT local_path,watched_progress,is_completed FROM videos",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(kept,("/synthetic/private/video".into(),123,true));
+        assert_eq!(c.query_row("SELECT duration_seconds FROM study_logs",[],|r|r.get::<_,i32>(0)).unwrap(),25);
+        assert_eq!(c.query_row("SELECT notes FROM bookmarks",[],|r|r.get::<_,String>(0)).unwrap(),"private synthetic note");
+        let mut other=playlist;other.id="synthetic-course-2".into();let mut shared=video;shared.playlist_id=Some(other.id.clone());
+        assert!(import_course(&mut c,other,vec![shared]).is_err());
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM playlists",[],|r|r.get::<_,i32>(0)).unwrap(),1);
+    }
 }

@@ -5,6 +5,7 @@ use tauri::Manager;
 
 mod db;
 mod commands;
+mod study_sync;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -19,6 +20,9 @@ fn main() {
             })?;
             
             let pool = db::init_db(app_dir)?;
+            let coordinator = study_sync::Coordinator::default();
+            coordinator.start(pool.clone());
+            app.manage(coordinator);
             app.manage(pool);
             
             let active_downloads = commands::ActiveDownloads {
@@ -32,6 +36,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            study_sync::study_sync_status,
+            study_sync::study_sync_wake,
+            study_sync::study_sync_set_name,
+            study_sync::study_sync_set_enabled,
             commands::get_folders,
             commands::create_folder,
             commands::delete_folder,

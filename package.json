@@ -7,7 +7,10 @@
     "dev": "node sync-version.js && vite",
     "build": "node sync-version.js && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node --test tests/*.test.mjs",
+    "test:native": "node tests/run-native.mjs",
+    "check:sync": "node tests/check-sync.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",

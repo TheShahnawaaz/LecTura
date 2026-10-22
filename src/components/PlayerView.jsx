@@ -1,3 +1,4 @@
+import { StudyClock } from "../lib/studyClock.mjs";
 import React, { useRef, useState, useEffect, useMemo } from "react";
 import { 
   Sliders, 
@@ -385,62 +386,39 @@ export function PlayerView({
     return () => clearYtProgressInterval();
   }, []);
 
-  // --- Study Heartbeat Log Tracking ---
+  // Monotonic focused-time sampling; each video has its own immutable session context.
   const isWatchingRef = useRef(false);
-  const heartbeatCounterRef = useRef(0);
+  const studyClockRef = useRef(null);
   const onStudyTimeLoggedRef = useRef(onStudyTimeLogged);
-  const activeVideoIdRef = useRef(activeVideo.id);
-
-  // Keep refs in sync without triggering the interval effect
-  useEffect(() => {
-    onStudyTimeLoggedRef.current = onStudyTimeLogged;
-  }, [onStudyTimeLogged]);
-
-  useEffect(() => {
-    activeVideoIdRef.current = activeVideo.id;
-  }, [activeVideo.id]);
-
-  const flushHeartbeat = () => {
-    if (heartbeatCounterRef.current > 0 && onStudyTimeLoggedRef.current) {
-      onStudyTimeLoggedRef.current(activeVideoIdRef.current, heartbeatCounterRef.current);
-      heartbeatCounterRef.current = 0;
-    }
+  onStudyTimeLoggedRef.current = onStudyTimeLogged;
+  const sampleStudy = (eligible = isWatchingRef.current && document.hasFocus()) => {
+    const position = videoPlayerRef.current?.currentTime ?? ytPlayerRef.current?.getCurrentTime?.() ?? 0;
+    studyClockRef.current?.tick(performance.now(), Date.now(), eligible, position, !!activeVideo.is_completed);
   };
-
   const setWatching = (watching) => {
-    if (isWatchingRef.current === watching) return;
+    sampleStudy();
     isWatchingRef.current = watching;
-    if (!watching) {
-      flushHeartbeat();
-    }
+    if (!watching) studyClockRef.current?.flush();
+    sampleStudy();
   };
-
-  // Heartbeat interval — only resets when the video itself changes
   useEffect(() => {
     isWatchingRef.current = false;
-    heartbeatCounterRef.current = 0;
-
-    const interval = setInterval(() => {
-      if (isWatchingRef.current && document.hasFocus()) {
-        heartbeatCounterRef.current += 1;
-        if (heartbeatCounterRef.current >= 10) {
-          if (onStudyTimeLoggedRef.current) {
-            onStudyTimeLoggedRef.current(activeVideoIdRef.current, 10);
-          }
-          heartbeatCounterRef.current = 0;
-        }
-      }
-    }, 1000);
-
+    const clock = new StudyClock({videoId:activeVideo.id, courseId:activeVideo.playlist_id,
+      emit:batch => onStudyTimeLoggedRef.current?.(batch)});
+    studyClockRef.current = clock;
+    const sample = () => sampleStudy();
+    const blur = () => { sampleStudy(true && isWatchingRef.current);clock.flush();sampleStudy(false); };
+    const focus = () => sampleStudy();
+    const timer=setInterval(sample,1000);
+    window.addEventListener('blur',blur);window.addEventListener('focus',focus);
+    const visibility=()=>document.hidden?blur():focus();document.addEventListener('visibilitychange',visibility);
     return () => {
-      clearInterval(interval);
-      // Flush any remaining seconds on unmount or video change
-      if (heartbeatCounterRef.current > 0 && onStudyTimeLoggedRef.current) {
-        onStudyTimeLoggedRef.current(activeVideoIdRef.current, heartbeatCounterRef.current);
-        heartbeatCounterRef.current = 0;
-      }
+      clearInterval(timer);window.removeEventListener('blur',blur);window.removeEventListener('focus',focus);
+      document.removeEventListener('visibilitychange',visibility);
+      sampleStudy();clock.flush();
+      if(studyClockRef.current===clock)studyClockRef.current=null;
     };
-  }, [activeVideo.id]);
+  }, [activeVideo.id, activeVideo.playlist_id]);
 
   // Ref to hold the latest playback speed so that callbacks don't capture stale state
   const playbackSpeedRef = useRef(playbackSpeed);

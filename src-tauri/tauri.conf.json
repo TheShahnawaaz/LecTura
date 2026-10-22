@@ -22,18 +22,20 @@
     "allowlist": {
       "all": false,
       "fs": {
-        "all": true,
-        "scope": ["$APPDIR/**", "$APPDATA/**"]
+        "all": false
       },
       "protocol": {
         "asset": true,
-        "assetScope": ["$APPDIR/**", "$APPDATA/**"]
+        "assetScope": [
+          "$APPDIR/**",
+          "$APPDATA/**"
+        ]
       },
       "shell": {
         "all": false,
         "open": true,
-        "execute": true,
-        "sidecar": true
+        "execute": false,
+        "sidecar": false
       },
       "window": {
         "all": false,
@@ -49,7 +51,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' https://www.youtube.com https://s.ytimg.com; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https: data: blob:; font-src 'self' data:; media-src 'self' asset: https://asset.localhost blob:; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'self'"
     },
     "bundle": {
       "active": true,

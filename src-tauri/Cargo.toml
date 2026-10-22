@@ -11,15 +11,20 @@ edition = "2021"
 tauri-build = { version = "1", features = [] }
 
 [dependencies]
-tauri = { version = "1", features = [ "window-set-fullscreen", "shell-open", "updater", "shell-execute", "shell-sidecar", "fs-all", "protocol-asset"] }
+tauri = { version = "1", features = [ "window-set-fullscreen", "shell-open", "updater", "process-command-api", "protocol-asset"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.31.0", features = ["bundled"] }
+rusqlite = { version = "0.31.0", features = ["bundled", "backup"] }
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.24.0"
-reqwest = { version = "0.11.27", features = ["blocking"] }
+reqwest = { version = "0.11.27", features = ["blocking", "json"] }
 zip = "0.6.6"
 base64 = "0.22"
+
+chrono = "=0.4.45"
+rand = "=0.8.6"
+sha2 = "=0.10.9"
+keyring = "=2.3.3"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

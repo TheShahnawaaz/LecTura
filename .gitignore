@@ -63,3 +63,8 @@ Desktop.ini
 /src-tauri/bin/yt-dlp*
 /src-tauri/bin/ffmpeg*
 /src-tauri/bin/ffprobe*
+
+# Local Cloudflare runtime and synthetic test artifacts
+.wrangler/
+.dev.vars*
+tests/.ui-generated-*/
