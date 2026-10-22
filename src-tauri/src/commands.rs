@@ -1,4 +1,3 @@
-use rusqlite::OptionalExtension;
 use tauri::{State, Manager};
 use crate::db::DbPool;
 use serde::{Serialize, Deserialize};
@@ -132,21 +131,23 @@ pub fn delete_folder(pool: State<'_, DbPool>, id: String) -> Result<(), String> 
     Ok(())
 }
 
+pub(crate) fn exclusive_asset_paths(conn: &rusqlite::Connection, courses: &[String]) -> Result<Vec<Option<String>>,String> {
+    let selected=serde_json::to_string(courses).map_err(|e|e.to_string())?;
+    let mut stmt=conn.prepare("SELECT DISTINCT v.local_path FROM videos v WHERE v.local_path IS NOT NULL AND v.local_path<>''
+      AND EXISTS(SELECT 1 FROM playlist_videos pv WHERE pv.video_id=v.id AND pv.playlist_id IN (SELECT value FROM json_each(?1)))
+      AND NOT EXISTS(SELECT 1 FROM playlist_videos pv WHERE pv.video_id=v.id AND pv.playlist_id NOT IN (SELECT value FROM json_each(?1)))").map_err(|e|e.to_string())?;
+    let rows=stmt.query_map([selected],|r|r.get(0)).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
 /// Delete a playlist AND its downloaded asset files from disk.
-/// Always removes every downloaded video file before wiping the DB rows.
+/// Shared downloads survive while another course still contains the video.
 #[tauri::command]
 pub fn delete_playlist_with_assets(pool: State<'_, DbPool>, playlist_id: String) -> Result<(), String> {
     let mut conn = pool.get().map_err(|e| e.to_string())?;
 
-    // Collect all local paths before touching the DB
-    let local_paths: Vec<Option<String>> = {
-        let mut stmt = conn.prepare(
-            "SELECT local_path FROM videos WHERE playlist_id = ?1"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([&playlist_id], |row| row.get(0))
-            .map_err(|e| e.to_string())?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let local_paths = exclusive_asset_paths(&tx, &[playlist_id.clone()])?;
 
     // Delete files from disk (best-effort, ignore individual errors)
     for path_opt in &local_paths {
@@ -157,10 +158,7 @@ pub fn delete_playlist_with_assets(pool: State<'_, DbPool>, playlist_id: String)
         }
     }
 
-    // Delete DB rows in a transaction
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM videos WHERE playlist_id = ?1", [&playlist_id])
-        .map_err(|e| e.to_string())?;
+    // The membership trigger transfers shared canonical ownership before the course is removed.
     tx.execute("DELETE FROM playlists WHERE id = ?1", [&playlist_id])
         .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -225,35 +223,17 @@ pub fn delete_folder_cascade(
 ) -> Result<(), String> {
     let mut conn = pool.get().map_err(|e| e.to_string())?;
 
-    // Collect all folder IDs in the subtree
-    let all_folder_ids = collect_descendant_folder_ids(&conn, &folder_id)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+    let all_folder_ids = collect_descendant_folder_ids(&tx, &folder_id)?;
 
     if delete_assets {
-        // Gather all local_paths for videos in these folders' playlists
-        for fid in &all_folder_ids {
-            let mut stmt = conn.prepare(
-                "SELECT v.local_path FROM videos v
-                 JOIN playlists p ON v.playlist_id = p.id
-                 WHERE p.folder_id = ?1 AND v.local_path IS NOT NULL AND v.local_path != ''"
-            ).map_err(|e| e.to_string())?;
-            let paths: Vec<String> = stmt.query_map([fid], |row| row.get(0))
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
-            for path in paths {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
+        let folders = serde_json::to_string(&all_folder_ids).map_err(|e|e.to_string())?;
+        let mut stmt=tx.prepare("SELECT id FROM playlists WHERE folder_id IN (SELECT value FROM json_each(?1))").map_err(|e|e.to_string())?;
+        let course_ids=stmt.query_map([folders],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+        for path in exclusive_asset_paths(&tx, &course_ids)?.into_iter().flatten() { let _ = std::fs::remove_file(path); }
     }
 
-    // DB deletions in a transaction
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
     for fid in &all_folder_ids {
-        // Delete videos for all playlists in this folder
-        tx.execute(
-            "DELETE FROM videos WHERE playlist_id IN (SELECT id FROM playlists WHERE folder_id = ?1)",
-            [fid],
-        ).map_err(|e| e.to_string())?;
         // Delete playlists in this folder
         tx.execute("DELETE FROM playlists WHERE folder_id = ?1", [fid])
             .map_err(|e| e.to_string())?;
@@ -329,11 +309,15 @@ pub fn get_playlists(pool: State<'_, DbPool>) -> Result<Vec<Playlist>, String> {
 #[tauri::command]
 pub fn get_playlist_videos(pool: State<'_, DbPool>, playlist_id: String) -> Result<Vec<Video>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    playlist_videos(&conn, playlist_id)
+}
+
+pub(crate) fn playlist_videos(conn: &rusqlite::Connection, playlist_id: String) -> Result<Vec<Video>, String> {
     let mut stmt = conn.prepare(
-        "SELECT id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed, created_at,
-                (SELECT COALESCE(CAST(SUM(duration_seconds) AS INTEGER), 0) FROM study_logs WHERE video_id = videos.id) as study_time,
-                error_log
-         FROM videos WHERE playlist_id = ?1 ORDER BY created_at ASC"
+        "SELECT v.id, pv.playlist_id, v.title, v.duration, v.thumbnail_url, v.url, v.local_path, v.download_status, v.download_progress, v.watched_progress, v.is_completed, v.created_at,
+                (SELECT COALESCE(CAST(SUM(duration_seconds) AS INTEGER), 0) FROM study_logs WHERE video_id=v.id AND course_id=?1) as study_time,
+                v.error_log
+         FROM videos v JOIN playlist_videos pv ON pv.video_id=v.id WHERE pv.playlist_id=?1 ORDER BY pv.position,v.created_at,v.id"
     ).map_err(|e| e.to_string())?;
     
     let rows = stmt.query_map([&playlist_id], |row| {
@@ -386,19 +370,13 @@ pub(crate) fn import_course(conn: &mut rusqlite::Connection, playlist: Playlist,
         ),
     ).map_err(|e| e.to_string())?;
     
-    for video in videos {
-        // Explicit single-course membership: refuse ambiguous reuse rather than move a video
-        // (and its historical study/bookmark ownership) silently to a different course.
-        let old_course: Option<String> = tx.query_row("SELECT playlist_id FROM videos WHERE id=?1", [&video.id], |r| r.get::<_, Option<String>>(0)).optional().map_err(|e| e.to_string())?.flatten();
-        if old_course.as_deref().is_some_and(|id| Some(id) != video.playlist_id.as_deref()) {
-            return Err("This video already belongs to another course. Import cancelled; existing history was preserved.".into());
-        }
+    for (position, video) in videos.into_iter().enumerate() {
         tx.execute(
             "INSERT INTO videos (id, playlist_id, title, duration, thumbnail_url, url, local_path, download_status, download_progress, watched_progress, is_completed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(id) DO UPDATE SET title=excluded.title,duration=excluded.duration,thumbnail_url=excluded.thumbnail_url,url=excluded.url",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(id) DO UPDATE SET playlist_id=COALESCE(videos.playlist_id,excluded.playlist_id),title=excluded.title,duration=excluded.duration,thumbnail_url=excluded.thumbnail_url,url=excluded.url",
             (
                 &video.id,
-                &video.playlist_id,
+                &playlist.id,
                 &video.title,
                 &video.duration,
                 &video.thumbnail_url,
@@ -410,6 +388,7 @@ pub(crate) fn import_course(conn: &mut rusqlite::Connection, playlist: Playlist,
                 if video.is_completed { 1 } else { 0 },
             ),
         ).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO playlist_videos(playlist_id,video_id,position) VALUES(?1,?2,?3) ON CONFLICT(playlist_id,video_id) DO UPDATE SET position=excluded.position", (&playlist.id,&video.id,position as i64)).map_err(|e|e.to_string())?;
     }
     
     tx.commit().map_err(|e| e.to_string())?;
@@ -527,7 +506,7 @@ pub(crate) fn study_stats(conn: &rusqlite::Connection) -> Result<StudyStats, Str
             datetime(l.created_at, 'localtime') as created_at
          FROM study_logs l
          JOIN videos v ON l.video_id = v.id
-         LEFT JOIN playlists p ON v.playlist_id = p.id
+         LEFT JOIN playlists p ON l.course_id = p.id
          ORDER BY l.created_at DESC
          LIMIT 10"
     ).map_err(|e| e.to_string())?;
@@ -617,9 +596,9 @@ pub(crate) fn day_study_details(conn: &rusqlite::Connection, date_str: String) -
             CAST(SUM(l.duration_seconds) AS INTEGER) as total_seconds
          FROM study_logs l
          JOIN videos v ON l.video_id = v.id
-         LEFT JOIN playlists p ON v.playlist_id = p.id
+         LEFT JOIN playlists p ON l.course_id = p.id
          WHERE date(l.created_at, 'localtime') = ?1
-         GROUP BY v.id
+         GROUP BY v.id,l.course_id
          ORDER BY total_seconds DESC"
     ).map_err(|e| e.to_string())?;
 
@@ -967,19 +946,16 @@ pub struct PlaylistStats {
 #[tauri::command]
 pub fn get_library_stats(pool: State<'_, DbPool>) -> Result<Vec<PlaylistStats>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    library_stats(&conn)
+}
+
+pub(crate) fn library_stats(conn: &rusqlite::Connection) -> Result<Vec<PlaylistStats>, String> {
     let mut stmt = conn.prepare(
-        "SELECT 
-            playlist_id, 
-            COUNT(id) as total_videos, 
-            SUM(CASE WHEN is_completed = 1 THEN 1 ELSE 0 END) as completed_videos,
-            SUM(duration) as total_duration,
-            SUM(watched_progress) as total_watched,
-            SUM(CASE WHEN local_path IS NOT NULL THEN 1 ELSE 0 END) as downloaded_videos,
-            SUM(CASE WHEN is_completed = 1 THEN COALESCE(duration, 0) ELSE 0 END) as completed_duration,
-            (SELECT COALESCE(CAST(SUM(duration_seconds) AS INTEGER), 0) FROM study_logs WHERE video_id IN (SELECT id FROM videos WHERE playlist_id = v.playlist_id)) as total_study_time
-         FROM videos v
-         WHERE playlist_id IS NOT NULL
-         GROUP BY playlist_id"
+        "SELECT pv.playlist_id,COUNT(v.id),SUM(CASE WHEN v.is_completed=1 THEN 1 ELSE 0 END),
+         SUM(v.duration),SUM(v.watched_progress),SUM(CASE WHEN v.local_path IS NOT NULL THEN 1 ELSE 0 END),
+         SUM(CASE WHEN v.is_completed=1 THEN COALESCE(v.duration,0) ELSE 0 END),
+         (SELECT COALESCE(CAST(SUM(duration_seconds) AS INTEGER),0) FROM study_logs WHERE course_id=pv.playlist_id)
+         FROM playlist_videos pv JOIN videos v ON v.id=pv.video_id GROUP BY pv.playlist_id"
     ).map_err(|e| e.to_string())?;
     
     let rows = stmt.query_map([], |row| {
@@ -1082,9 +1058,9 @@ pub fn search_library(pool: State<'_, DbPool>, query: String) -> Result<Vec<Sear
 
     // 3. Search Videos (Lectures)
     let mut stmt = conn.prepare(
-        "SELECT v.id, v.title, v.playlist_id, p.title as playlist_title
-         FROM videos v
-         INNER JOIN playlists p ON v.playlist_id = p.id
+        "SELECT v.id, v.title, pv.playlist_id, p.title as playlist_title
+         FROM videos v JOIN playlist_videos pv ON pv.video_id=v.id
+         INNER JOIN playlists p ON pv.playlist_id = p.id
          WHERE v.title LIKE ?1
          LIMIT 15"
     ).map_err(|e| e.to_string())?;
@@ -1492,12 +1468,12 @@ pub fn download_playlist(
     let conn = pool_clone.get().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE videos SET download_status = 'pending', download_progress = 0, error_log = NULL 
-         WHERE playlist_id = ?1 AND download_status != 'completed'",
+         WHERE id IN (SELECT video_id FROM playlist_videos WHERE playlist_id=?1) AND download_status != 'completed'",
         [&playlist_id],
     ).map_err(|e| e.to_string())?;
     
     // Find all videos that were set to pending so we can broadcast their initial status to frontend
-    let mut stmt = conn.prepare("SELECT id FROM videos WHERE playlist_id = ?1 AND download_status = 'pending'").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT v.id FROM videos v JOIN playlist_videos pv ON pv.video_id=v.id WHERE pv.playlist_id=?1 AND v.download_status='pending'").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&playlist_id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
     for row in rows {
         if let Ok(video_id) = row {
@@ -1585,7 +1561,7 @@ pub fn cancel_playlist_download(
 
     // 1. Find all videos in this playlist
     let conn = pool_clone.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT id FROM videos WHERE playlist_id = ?1").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT video_id FROM playlist_videos WHERE playlist_id=?1").map_err(|e| e.to_string())?;
     let rows = stmt.query_map([&playlist_id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
     
     let mut video_ids = Vec::new();
@@ -2168,22 +2144,37 @@ pub fn clean_storage(
 mod sync_import_tests {
     use super::*;
     #[test]
-    fn reimport_preserves_history_bookmarks_paths_and_refuses_ambiguous_membership() {
+    fn shared_memberships_preserve_history_assets_progress_and_course_queries() {
         let mut c = rusqlite::Connection::open_in_memory().unwrap();
         c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         crate::db::run_migrations(&mut c).unwrap();
         let playlist = Playlist { id:"synthetic-course-1".into(),folder_id:None,title:"Synthetic course".into(),description:None,thumbnail_url:None,url:None,created_at:String::new() };
         let video = Video { id:"synthetic-video-1".into(),playlist_id:Some(playlist.id.clone()),title:"Synthetic video".into(),duration:600,thumbnail_url:None,url:"https://synthetic.invalid/video".into(),local_path:None,download_status:"none".into(),download_progress:0,watched_progress:0,is_completed:false,created_at:String::new(),study_time:None,error_log:None };
         import_course(&mut c,playlist.clone(),vec![video.clone()]).unwrap();
-        c.execute_batch("UPDATE videos SET local_path='/synthetic/private/video',download_status='completed',watched_progress=123,is_completed=1;INSERT INTO study_logs(video_id,duration_seconds) VALUES('synthetic-video-1',25);INSERT INTO bookmarks(video_id,timestamp,notes,screenshot_path) VALUES('synthetic-video-1',10,'private synthetic note','/synthetic/private/screenshot')").unwrap();
+        c.execute_batch("UPDATE videos SET local_path='/synthetic/private/video',download_status='completed',watched_progress=123,is_completed=1;INSERT INTO study_logs(video_id,duration_seconds,course_id) VALUES('synthetic-video-1',25,'synthetic-course-1');INSERT INTO bookmarks(video_id,timestamp,notes,screenshot_path) VALUES('synthetic-video-1',10,'private synthetic note','/synthetic/private/screenshot')").unwrap();
         let mut renamed=playlist.clone();renamed.title="Updated course".into();
         import_course(&mut c,renamed,vec![video.clone()]).unwrap();
         let kept:(String,i32,bool)=c.query_row("SELECT local_path,watched_progress,is_completed FROM videos",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
         assert_eq!(kept,("/synthetic/private/video".into(),123,true));
         assert_eq!(c.query_row("SELECT duration_seconds FROM study_logs",[],|r|r.get::<_,i32>(0)).unwrap(),25);
         assert_eq!(c.query_row("SELECT notes FROM bookmarks",[],|r|r.get::<_,String>(0)).unwrap(),"private synthetic note");
-        let mut other=playlist;other.id="synthetic-course-2".into();let mut shared=video;shared.playlist_id=Some(other.id.clone());
-        assert!(import_course(&mut c,other,vec![shared]).is_err());
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM playlists",[],|r|r.get::<_,i32>(0)).unwrap(),1);
+        let mut other=playlist.clone();other.id="synthetic-course-2".into();let mut shared=video.clone();shared.playlist_id=Some(other.id.clone());
+        import_course(&mut c,other.clone(),vec![shared]).unwrap();
+        assert_eq!(playlist_videos(&c,playlist.id.clone()).unwrap().len(),1);
+        let second=playlist_videos(&c,other.id.clone()).unwrap();assert_eq!(second.len(),1);assert_eq!(second[0].playlist_id.as_deref(),Some(other.id.as_str()));
+        assert_eq!(second[0].local_path.as_deref(),Some("/synthetic/private/video"));assert!(second[0].is_completed);
+        let stats=library_stats(&c).unwrap();assert_eq!(stats.len(),2);assert!(stats.iter().all(|p|p.total_videos==1));
+        assert_eq!(stats.iter().find(|p|p.playlist_id==playlist.id).unwrap().total_study_time,Some(25));
+        assert_eq!(stats.iter().find(|p|p.playlist_id==other.id).unwrap().total_study_time,Some(0));
+        assert!(exclusive_asset_paths(&c,&[playlist.id.clone()]).unwrap().is_empty());
+        assert_eq!(exclusive_asset_paths(&c,&[playlist.id.clone(),other.id.clone()]).unwrap().len(),1);
+        c.execute("DELETE FROM playlists WHERE id=?1",[&playlist.id]).unwrap();
+        assert_eq!(playlist_videos(&c,other.id.clone()).unwrap().len(),1);
+        assert_eq!(c.query_row("SELECT playlist_id FROM videos",[],|r|r.get::<_,String>(0)).unwrap(),other.id);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM bookmarks",[],|r|r.get::<_,i32>(0)).unwrap(),1);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM study_logs",[],|r|r.get::<_,i32>(0)).unwrap(),1);
+        import_course(&mut c,playlist.clone(),vec![video]).unwrap();
+        assert_eq!(playlist_videos(&c,playlist.id).unwrap().len(),1);
+
     }
 }

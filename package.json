@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "test": "node --test tests/*.test.mjs",
     "test:native": "node tests/run-native.mjs",
-    "check:sync": "node tests/check-sync.mjs"
+    "check:sync": "node tests/check-sync.mjs",
+    "test:native:tls": "node tests/run-native-tls.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",

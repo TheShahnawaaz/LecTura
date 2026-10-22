@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LecTura sharing · synthetic preview</title>
+  </head>
+  <body class="dark bg-background text-foreground">
+    <main>
+      <p style="padding: 16px; font: 14px system-ui">
+        Synthetic learner UI preview · no native storage, network enrollment or
+        real credentials.
+      </p>
+      <div id="root"></div>
+    </main>
+    <script type="module">
+      import React from "react";
+      import { createRoot } from "react-dom/client";
+      import { StudySharingNotice } from "../src/components/StudySharingNotice.jsx";
+      import "../src/index.css";
+      let status = {
+        needsName: true,
+        sharingEnabled: true,
+        configured: true,
+        recipient: "Synthetic course administrator",
+        enrollmentState: "name_required",
+        pending: 0,
+        blocked: 0,
+        lastSuccessAt: null,
+      };
+      window.__TAURI_IPC__ = ({ cmd, callback, error, ...args }) => {
+        try {
+          let result = null;
+          if (cmd === "study_sync_status") result = { ...status };
+          else if (cmd === "study_sync_set_name")
+            status = {
+              ...status,
+              needsName: false,
+              sharingEnabled: args.sharingEnabled,
+              enrollmentState: "pending",
+            };
+          else if (cmd === "study_sync_set_enabled")
+            status = { ...status, sharingEnabled: args.enabled };
+          else if (cmd !== "study_sync_wake")
+            throw new Error("Synthetic preview supports only sharing commands");
+          window["_" + callback](result);
+        } catch {
+          window["_" + error]("Synthetic preview error");
+        }
+      };
+      createRoot(document.getElementById("root")).render(
+        React.createElement(StudySharingNotice),
+      );
+    </script>
+  </body>
+</html>

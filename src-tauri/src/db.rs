@@ -85,6 +85,7 @@ const MIGRATIONS: &[&str] = &[
     // to safely add notes, screenshot_path, and is_doubt columns one at a time.
     r#""#,
     include_str!("../migrations/0008_study_sync.sql"),
+    include_str!("../migrations/0009_course_memberships.sql"),
 ];
 
 pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> {
@@ -98,7 +99,7 @@ pub fn init_db(mut path: PathBuf) -> Result<DbPool, Box<dyn std::error::Error>> 
         // SQLite's online backup includes committed WAL data and never reads a live file naively.
         let source = Connection::open(&path)?;
         let version: i32 = source.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version < 8 {
+        if version < 9 {
             let backup_path = path.with_extension(format!("pre-sync-{}.db", crate::study_sync::now()));
             source.backup(rusqlite::DatabaseName::Main, &backup_path, None)?;
         }

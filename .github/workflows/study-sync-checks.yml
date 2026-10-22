@@ -1,0 +1,41 @@
+name: Study sync checks
+on:
+  pull_request:
+  push:
+    branches: [feat/private-study-sync]
+permissions:
+  contents: read
+concurrency:
+  group: study-sync-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  web-and-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix tests ci --ignore-scripts
+      - run: npm --prefix cloud/worker ci --ignore-scripts
+      - run: npm test
+      - run: npm run build
+      - run: node tests/node_modules/prettier/bin/prettier.cjs --check 'cloud/worker/*.mjs' 'admin-local/**/*.mjs' 'admin-local/public/*' 'tests/*.mjs' src/components/StudySharingNotice.jsx src/lib/studyClock.mjs
+  native-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix tests ci --ignore-scripts
+      - run: npm --prefix cloud/worker ci --ignore-scripts
+      - run: npm run check:sync
+      - run: npm run test:native
+      - name: Synthetic native TLS and D1 integration
+        run: npm run test:native:tls

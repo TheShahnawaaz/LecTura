@@ -186,7 +186,7 @@ export function CommandPalette({ isOpen, onClose, onSelectResult, folders = [] }
               const isSelected = index === selectedIndex;
               return (
                 <div
-                  key={`${item.item_type}-${item.id}`}
+                  key={`${item.item_type}-${item.id}-${item.playlist_id || ""}`}
                   onClick={() => triggerSelect(item)}
                   onMouseEnter={() => setSelectedIndex(index)}
                   className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl cursor-pointer transition-colors text-left w-full select-none gap-3 ${

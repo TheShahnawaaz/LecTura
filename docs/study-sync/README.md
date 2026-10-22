@@ -7,7 +7,7 @@ The user's October 22 amendment supersedes the original plan's opt-in language: 
 ## Included behavior
 
 - React player measures focused playing wall time with a monotonic clock, caps sleep/timer gaps, keeps stable session and batch IDs, splits intervals at UTC midnight, and retries a failed local flush with the same immutable batch. Playback speed and seeks do not add studied duration.
-- SQLite migration 8 makes a consistent online backup before migration. Local study insertion and the dedicated outbox payload commit in one transaction. Duplicate batch IDs do not double count. No historical rows are scanned into the queue. A forced quit can lose the last in-memory batch (normally up to about ten seconds); persistent local-write failures can leave more in memory until recovery. Outbox snapshots do not have cascading video foreign keys.
+- SQLite migrations 8–9 make a consistent online backup before migration. Local study insertion and the dedicated outbox payload commit in one transaction. Duplicate batch IDs do not double count. No historical rows are scanned into the queue. A forced quit can lose the last in-memory batch (normally up to about ten seconds); persistent local-write failures can leave more in memory until recovery. Outbox snapshots do not have cascading video foreign keys.
 - Name-only automatic enrollment sends no study metadata. Registration starts closed, opens for at most 60 minutes, and uses a transaction-enforced pending cap and daily budget. Pending devices can check their own status but cannot ingest or read analytics.
 - The native coordinator owns all secrets and HTTP. It persists retry deadlines, uses a single sender lease, wakes at startup/reconnect with jitter, normally sends at minute cadence, and polls pending status at most once per five minutes. Approved empty queues do not produce periodic network requests.
 - Installation-specific random 256-bit secrets use the OS credential store (`keyring`); D1 stores SHA-256 token hashes. No administrator credential is present in the learner app or frontend. The fixed HTTPS service origin and recipient label are trusted build-time configuration, with no learner configuration screen.
@@ -36,10 +36,11 @@ npm --prefix tests ci --ignore-scripts
 npm --prefix cloud/worker ci --ignore-scripts
 npm test
 npm run test:native
+npm run test:native:tls
 npm run build
 ```
 
-`npm test` includes Node security/validation tests, a standard-library Python SQLite adapter, React/DOM lifecycle tests, and an actual local `workerd` + emulated D1 integration fixture. It opens loopback listeners, so restricted sandboxes may need local execution permission. Python 3 with SQLite JSON support is needed for the lightweight SQL adapter; override `LECTURA_TEST_PYTHON` to select an installed runtime. No tests use an existing LecTura database, OS credential entry, or a production endpoint.
+`npm test` includes Node security/validation tests, a standard-library Python SQLite adapter, React/DOM lifecycle tests, and an actual local `workerd` + emulated D1 integration fixture. It opens loopback listeners, so restricted sandboxes may need local execution permission. Python 3 with SQLite JSON support is needed for the lightweight SQL adapter; override `LECTURA_TEST_PYTHON` to select an installed runtime. No ordinary tests use an existing LecTura database, OS credential entry, or a production endpoint. The separately invoked macOS secure-store integration (`npm run test:native:tls -- --secure-store`) uses and removes one uniquely named synthetic-only Keychain entry; it never reads existing credentials.
 
 `test:native` uses the `stable` Rust toolchain explicitly and disables the missing sidecar in **test configuration only**. It checks both library and binary, then runs native tests, without opening the desktop application. The repository does not include platform `yt-dlp` sidecars; real packaging still needs the official reviewed sidecars and platform signing setup. Rust test/debug metadata is disabled to limit disk use.
 
@@ -55,9 +56,9 @@ Server raw events retain 30 days, daily rollups 365 days, receipts 90 days and p
 
 ## Deliberate constraints and release gaps
 
-- Cross-course reuse of the same video is rejected atomically. Metadata re-import safely updates an existing course/video while preserving progress, study logs, bookmarks and downloaded paths. Full multi-course video memberships are not implemented. This is a conservative explicit membership policy, not a claim that shared membership is supported.
+- Explicit course memberships retain shared videos in both courses. Metadata re-import preserves progress, study logs, bookmarks and downloaded paths. Progress/download state is canonical per video; focused time and sync snapshots retain the selected course. Removing one course preserves a video/file/history still used by another course.
 - Authentication is installation-based and names are unverified. A copied credential can impersonate that installation. This is observational study reporting, not verified identity, attendance, understanding, or live presence.
 - Production provisioning, deployment, credentials, account-specific free-plan eligibility/quotas and real learner approval have **not** been performed. The build defaults to no configured endpoint, preventing enrollment and upload.
-- macOS arm64 compile/persistence checks do not establish macOS x64/Windows packaging, real OS secure-store behavior, or a complete native player/network end-to-end run. Native HTTP retry branches have persistence/ack tests and server fixtures; real TLS/secure-store integration remains a release gate.
+- The actual native coordinator passed loopback HTTPS/workerd/D1 integration in both memory and isolated macOS Keychain modes, including dropped-ack replay, certificate validation, redirects and retry behavior. This does not establish macOS x64/Windows packaging or a full signed native player/WebView end-to-end run.
 - Cloudflare CPU and billed row/index measurements cannot be inferred from local timing. Review account metrics during separately authorized synthetic staging before real rollout. Never auto-upgrade or enable a paid service.
-- The UI browser bridge was unreliable during validation; see the validation report for verified DOM flows and the remaining visual/native smoke checks. DOM tests do not replace a visual inspection of platform WebViews and YouTube/offline playback under the tightened CSP.
+- Chrome desktop visual smoke passed for the synthetic dashboard and actual sharing component with synthetic IPC. Platform WebViews and YouTube/offline playback under the tightened CSP still require packaging smoke checks. See `follow-up-validation.md` for the completed follow-up and exact remaining gates.

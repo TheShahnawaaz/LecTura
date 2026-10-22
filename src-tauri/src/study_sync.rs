@@ -68,7 +68,10 @@ fn recipient() -> String {
         .to_owned()
 }
 fn entry(id: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new("com.lectura.study-sync", id).map_err(|_| "secure_store_unavailable".into())
+    credential_entry("com.lectura.study-sync", id)
+}
+fn credential_entry(service: &str, id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(service, id).map_err(|_| "secure_store_unavailable".into())
 }
 
 #[derive(Serialize)]
@@ -210,7 +213,7 @@ pub struct StudyBatch {
     pub completed: bool,
 }
 fn snapshot(tx: &Transaction, course: &str, video: &str) -> Result<(String, String), String> {
-    tx.query_row("SELECT p.title,v.title FROM videos v JOIN playlists p ON p.id=v.playlist_id WHERE v.id=?1 AND p.id=?2",params![video,course],|r|Ok((r.get(0)?,r.get(1)?))).map(|(a,b)|(safe_title(a),safe_title(b))).map_err(|_|"video_context_unavailable".into())
+    tx.query_row("SELECT p.title,v.title FROM videos v JOIN playlist_videos pv ON pv.video_id=v.id JOIN playlists p ON p.id=pv.playlist_id WHERE v.id=?1 AND p.id=?2",params![video,course],|r|Ok((r.get(0)?,r.get(1)?))).map(|(a,b)|(safe_title(a),safe_title(b))).map_err(|_|"video_context_unavailable".into())
 }
 fn enqueue(tx: &Transaction, mut payload: Value, at: i64) -> Result<(), String> {
     let identity:Option<(String,String,i64)>=tx.query_row("SELECT installation_id,sharing_epoch,enabled_at FROM sync_identity WHERE id=1 AND sharing_enabled=1 AND enrollment_state NOT IN ('revoked','rejected')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|_|"database_unavailable")?;
@@ -302,7 +305,7 @@ pub fn capture(c: &mut Connection, b: &StudyBatch) -> Result<bool, String> {
     )
     .map_err(|_| "batch_conflict")?;
     // Fractional seconds are retained; existing SUM-based stats continue to reflect focused wall time.
-    tx.execute("INSERT INTO study_logs(video_id,duration_seconds,batch_id,created_at) VALUES(?1,?2,?3,datetime(?4/1000,'unixepoch'))",params![b.video_id,b.focused_milliseconds as f64/1000.0,b.batch_id,b.started_at]).map_err(|_|"study_write_failed")?;
+    tx.execute("INSERT INTO study_logs(video_id,duration_seconds,batch_id,created_at,course_id) VALUES(?1,?2,?3,datetime(?4/1000,'unixepoch'),?5)",params![b.video_id,b.focused_milliseconds as f64/1000.0,b.batch_id,b.started_at,b.course_id]).map_err(|_|"study_write_failed")?;
     enqueue(
         &tx,
         json!({"eventId":b.batch_id,"eventType":"study_batch","sessionId":b.session_id,"batchSequence":b.batch_sequence,
@@ -405,6 +408,11 @@ fn retry(c: &Connection, code: &str, failures: u32, after: Option<i64>) -> Resul
     c.execute("UPDATE sync_identity SET failures=MIN(failures+1,32),next_attempt_at=?1,safe_error=?2 WHERE id=1",params![now()+delay,code]).map_err(|_|"database_unavailable")?;
     Ok(())
 }
+fn transport_builder() -> reqwest::blocking::ClientBuilder {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::none())
+}
 impl Coordinator {
     pub fn wake(&self) {
         let mut last = self.last_wake.lock().unwrap_or_else(|e| e.into_inner());
@@ -441,6 +449,24 @@ impl Coordinator {
         let Some(origin) = origin() else {
             return Ok(());
         };
+        let client = transport_builder()
+            .build()
+            .map_err(|_| "transport_unavailable")?;
+        self.tick_with(pool, &origin, &client, &|id| {
+            entry(id)?
+                .get_password()
+                .map_err(|_| "secure_store_unavailable".into())
+        })
+    }
+    // Private dependency boundary: production always supplies the fixed HTTPS origin, OS store,
+    // certificate-validating client, and disabled redirects. Only cfg(test) can inject fixtures.
+    fn tick_with(
+        &self,
+        pool: &DbPool,
+        origin: &str,
+        client: &reqwest::blocking::Client,
+        read_secret: &dyn Fn(&str) -> Result<String, String>,
+    ) -> Result<(), String> {
         let c = pool.get().map_err(|_| "database_unavailable")?;
         let Some(i) = identity(&c)? else {
             return Ok(());
@@ -463,18 +489,13 @@ impl Coordinator {
         if i.next > now() {
             return Ok(());
         }
-        let secret = match entry(&i.id)?.get_password() {
+        let secret = match read_secret(&i.id) {
             Ok(s) => s,
             Err(_) => {
                 retry(&c, "secure_store_unavailable", i.failures, None)?;
                 return Ok(());
             }
         };
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(12))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| "transport_unavailable")?;
         if i.state == "new" {
             if !i.enabled {
                 return Ok(());
@@ -708,7 +729,7 @@ mod tests {
         let mut c = Connection::open_in_memory().unwrap();
         c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         crate::db::run_migrations(&mut c).unwrap();
-        c.execute_batch("INSERT INTO playlists(id,title) VALUES('course-1','Synthetic course');INSERT INTO videos(id,playlist_id,title,duration,url,local_path) VALUES('video-1','course-1','Synthetic video',600,'https://synthetic.invalid/video','/synthetic/private/path');INSERT INTO bookmarks(video_id,timestamp,notes,screenshot_path,is_doubt) VALUES('video-1',2,'PRIVATE NOTE','/synthetic/private/screenshot',1)").unwrap();
+        c.execute_batch("INSERT INTO playlists(id,title) VALUES('course-1','Synthetic course');INSERT INTO videos(id,playlist_id,title,duration,url,local_path) VALUES('video-1','course-1','Synthetic video',600,'https://synthetic.invalid/video','/synthetic/private/path');INSERT INTO playlist_videos(playlist_id,video_id) VALUES('course-1','video-1');INSERT INTO bookmarks(video_id,timestamp,notes,screenshot_path,is_doubt) VALUES('video-1',2,'PRIVATE NOTE','/synthetic/private/screenshot',1)").unwrap();
         c.execute("INSERT INTO sync_identity(id,installation_id,display_name,sharing_epoch,enabled_at,enrollment_state) VALUES(1,'synthetic_installation_0001','Alex (synthetic)','synthetic_sharing_epoch_0001',?1,'approved')",[now()-100000]).unwrap();
         c
     }
@@ -751,6 +772,69 @@ mod tests {
         let mut conflict = b.clone();
         conflict.session_id = "synthetic_other_session".into();
         assert!(capture(&mut c, &conflict).is_err());
+    }
+    #[test]
+    fn shared_video_capture_keeps_the_selected_course_and_does_not_duplicate_global_time() {
+        let mut c = fixture();
+        c.execute_batch("INSERT INTO playlists(id,title) VALUES('course-2','Synthetic second course');INSERT INTO playlist_videos(playlist_id,video_id) VALUES('course-2','video-1')").unwrap();
+        let mut b = batch();
+        b.course_id = "course-2".into();
+        capture(&mut c, &b).unwrap();
+        let raw: String = c
+            .query_row("SELECT payload FROM study_outbox", [], |r| r.get(0))
+            .unwrap();
+        let payload: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(payload["courseId"], "course-2");
+        assert_eq!(payload["courseTitle"], "Synthetic second course");
+        let stats = crate::commands::library_stats(&c).unwrap();
+        assert_eq!(
+            stats
+                .iter()
+                .find(|p| p.playlist_id == "course-1")
+                .unwrap()
+                .total_study_time,
+            Some(0)
+        );
+        assert_eq!(
+            stats
+                .iter()
+                .find(|p| p.playlist_id == "course-2")
+                .unwrap()
+                .total_study_time,
+            Some(10)
+        );
+        assert_eq!(
+            crate::commands::study_stats(&c)
+                .unwrap()
+                .total_study_seconds,
+            10
+        );
+    }
+    #[test]
+    fn migration_from_v8_seeds_membership_and_course_attribution_without_erasing_history() {
+        let mut c = fixture();
+        c.execute_batch("INSERT INTO study_logs(video_id,duration_seconds) VALUES('video-1',25);DROP INDEX study_logs_course;ALTER TABLE study_logs DROP COLUMN course_id;DROP TRIGGER preserve_shared_video;DROP TABLE playlist_videos;PRAGMA user_version=8").unwrap();
+        crate::db::run_migrations(&mut c).unwrap();
+        assert_eq!(
+            c.query_row("SELECT course_id FROM study_logs", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "course-1"
+        );
+        assert_eq!(count(&c, "playlist_videos"), 1);
+        assert_eq!(count(&c, "bookmarks"), 1);
+        assert_eq!(
+            c.query_row("SELECT local_path FROM videos", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "/synthetic/private/path"
+        );
+        assert_eq!(
+            crate::commands::study_stats(&c)
+                .unwrap()
+                .total_study_seconds,
+            25
+        );
     }
     #[test]
     fn fractional_seconds_remain_readable_in_existing_local_stats() {
@@ -895,5 +979,197 @@ mod tests {
         );
         drop(c);
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    #[ignore = "requires the isolated loopback TLS runner; never uses production configuration"]
+    fn synthetic_native_tls_outbox() {
+        let origin =
+            std::env::var("LECTURA_SYNTHETIC_TLS_ORIGIN").expect("use npm run test:native:tls");
+        let parsed = reqwest::Url::parse(&origin).unwrap();
+        assert_eq!(parsed.scheme(), "https");
+        assert_eq!(parsed.host_str(), Some("localhost"));
+        let ca = std::fs::read(std::env::var("LECTURA_SYNTHETIC_TLS_CA").unwrap()).unwrap();
+        let client = transport_builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap())
+            .build()
+            .unwrap();
+        let id = std::env::var("LECTURA_SYNTHETIC_INSTALLATION").unwrap();
+        let secret = "11".repeat(32);
+        let epoch = "synthetic_sharing_epoch_0001";
+        let use_keychain = std::env::var("LECTURA_SYNTHETIC_KEYCHAIN").as_deref() == Ok("1");
+        let service = "com.lectura.study-sync.synthetic-test";
+        struct Cleanup {
+            service: &'static str,
+            id: String,
+            active: bool,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                if self.active {
+                    let _ = credential_entry(self.service, &self.id)
+                        .and_then(|e| e.delete_password().map_err(|_| "cleanup_failed".into()));
+                }
+            }
+        }
+        let mut cleanup = Cleanup {
+            service,
+            id: id.clone(),
+            active: use_keychain,
+        };
+        if use_keychain {
+            let e = credential_entry(service, &id).unwrap();
+            assert!(matches!(e.get_password(), Err(keyring::Error::NoEntry)));
+            e.set_password(&secret)
+                .expect("isolated synthetic Keychain write unavailable");
+            assert_eq!(e.get_password().unwrap(), secret);
+        }
+        let read = |requested: &str| {
+            assert_eq!(requested, id);
+            if use_keychain {
+                credential_entry(service, requested)?
+                    .get_password()
+                    .map_err(|_| "synthetic_secure_store_unavailable".into())
+            } else {
+                Ok(secret.clone())
+            }
+        };
+        let dir = std::path::PathBuf::from(std::env::var("LECTURA_SYNTHETIC_DB_DIR").unwrap());
+        let pool = crate::db::init_db(dir).unwrap();
+        let coordinator = Coordinator::default();
+        {
+            let c = pool.get().unwrap();
+            c.execute_batch("INSERT INTO playlists(id,title) VALUES('course-1','Synthetic native course');INSERT INTO videos(id,playlist_id,title,duration,url) VALUES('video-1','course-1','Synthetic native video',600,'https://synthetic.invalid/video');INSERT INTO playlist_videos(playlist_id,video_id) VALUES('course-1','video-1')").unwrap();
+            c.execute("INSERT INTO sync_identity(id,installation_id,display_name,sharing_epoch,enabled_at) VALUES(1,?1,'Synthetic native learner',?2,?3)",params![id,epoch,now()-100000]).unwrap();
+        }
+        let control = |mode: &str| {
+            client
+                .post(format!("{origin}/__synthetic/mode"))
+                .header("X-LecTura-Synthetic", "fixture")
+                .json(&json!({"mode":mode}))
+                .send()
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        };
+        let summary = || -> Value {
+            client
+                .get(format!("{origin}/__synthetic/summary"))
+                .header("X-LecTura-Synthetic", "fixture")
+                .send()
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .unwrap()
+        };
+        let mutate = |sql: &str| {
+            pool.get().unwrap().execute_batch(sql).unwrap();
+        };
+        let mut first = batch();
+        first.started_at = now() - 20000;
+        first.ended_at = first.started_at + 10000;
+        capture(&mut pool.get().unwrap(), &first).unwrap();
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(
+            identity(&pool.get().unwrap()).unwrap().unwrap().state,
+            "pending"
+        );
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(summary()["eventCalls"], 0);
+        assert_eq!(summary()["focusedMs"], 0);
+        client
+            .post(format!("{origin}/v1/admin/enrollments/{id}/approve"))
+            .bearer_auth("aa".repeat(32))
+            .json(&json!({}))
+            .send()
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        mutate("UPDATE sync_identity SET last_status_at=0");
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(
+            identity(&pool.get().unwrap()).unwrap().unwrap().state,
+            "approved"
+        );
+        control("drop_after_commit");
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(status(&pool.get().unwrap()).unwrap().pending, 1);
+        assert_eq!(summary()["focusedMs"], 10000);
+        let calls = summary()["eventCalls"].as_i64().unwrap();
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(summary()["eventCalls"], calls);
+        mutate("UPDATE sync_identity SET next_attempt_at=0");
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(status(&pool.get().unwrap()).unwrap().pending, 0);
+        assert_eq!(summary()["focusedMs"], 10000);
+        assert_eq!(summary()["receipts"], 1);
+        let mut second = first.clone();
+        second.batch_id = "synthetic_batch_000002".into();
+        second.batch_sequence = 1;
+        capture(&mut pool.get().unwrap(), &second).unwrap();
+        // The normal client must reject the ephemeral untrusted certificate without sending a payload.
+        let untrusted = transport_builder().build().unwrap();
+        let calls = summary()["eventCalls"].as_i64().unwrap();
+        coordinator
+            .tick_with(&pool, &origin, &untrusted, &read)
+            .unwrap();
+        assert_eq!(summary()["eventCalls"], calls);
+        assert_eq!(status(&pool.get().unwrap()).unwrap().pending, 1);
+        mutate("UPDATE sync_identity SET next_attempt_at=0");
+        control("redirect");
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(summary()["redirected"], 0);
+        assert_eq!(status(&pool.get().unwrap()).unwrap().pending, 1);
+        mutate("UPDATE sync_identity SET next_attempt_at=0");
+        control("429");
+        let before = now();
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert!(identity(&pool.get().unwrap()).unwrap().unwrap().next >= before + 59000);
+        mutate("UPDATE sync_identity SET next_attempt_at=0");
+        control("413");
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(identity(&pool.get().unwrap()).unwrap().unwrap().limit, 5);
+        mutate("UPDATE sync_identity SET next_attempt_at=0");
+        control("unknown_ack");
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(status(&pool.get().unwrap()).unwrap().pending, 1);
+        assert_eq!(summary()["focusedMs"], 20000);
+        mutate("UPDATE sync_identity SET next_attempt_at=0");
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(status(&pool.get().unwrap()).unwrap().pending, 0);
+        assert_eq!(summary()["focusedMs"], 20000);
+        set_enabled(&mut pool.get().unwrap(), false).unwrap();
+        coordinator
+            .tick_with(&pool, &origin, &client, &read)
+            .unwrap();
+        assert_eq!(summary()["sharingEnabled"], false);
+        if use_keychain {
+            let e = credential_entry(service, &id).unwrap();
+            e.delete_password().unwrap();
+            assert!(matches!(e.get_password(), Err(keyring::Error::NoEntry)));
+            cleanup.active = false;
+        }
     }
 }

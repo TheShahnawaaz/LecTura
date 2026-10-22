@@ -1,4 +1,6 @@
-# Validation record — 22 October 2026
+# Initial checkpoint validation — 22 October 2026
+
+The later `follow-up-validation.md` supersedes the native TLS/Keychain, visual, course-membership and publication gaps recorded here. This file preserves the initial checkpoint evidence.
 
 Validated on the connected Mac's local task workspace, based on repository commit `1efd44891b08199aed2cc8d47a9521e8f6927fd4`. No checkout instructions were present (`AGENTS.md`, checkout `.agents/skills`, and the specified local Codex memory summary locations were absent). The checkout was initially clean. The exact saved plan is preserved byte-for-byte in `docs/private-study-sync-plan.md` (42,344 bytes), and the 43,278-byte companion patch was recovered locally. The older implementation backup was not used.
 
