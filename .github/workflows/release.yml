@@ -44,7 +44,8 @@ jobs:
             const url = new URL(raw);
             valid = url.protocol === 'https:' && !!url.hostname &&
               !url.username && !url.password && url.pathname === '/' &&
-              !url.search && !url.hash && !!recipient.trim();
+              !url.href.includes('?') && !url.href.includes('#') &&
+              !!recipient.trim();
           } catch {}
           if (!valid) {
             console.error('Set repository variables LECTURA_SYNC_ORIGIN (HTTPS origin only) and LECTURA_SYNC_RECIPIENT (approved public name/contact) before releasing.');
