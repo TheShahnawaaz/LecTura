@@ -10,6 +10,8 @@ The operator must provision an independent high-entropy application-admin bearer
 
 After the operator has separately provisioned and reviewed the service, build the learner app with `LECTURA_SYNC_ORIGIN` set to the fixed HTTPS origin and `LECTURA_SYNC_RECIPIENT` set to the intended administrator's understandable identity/contact. No learner URL, login, invite, pairing code or settings step exists. Leaving this configuration absent keeps the network sender inactive, while sharing remains the visible default preference.
 
+These are Rust compile-time values, not `VITE_*` settings or variables that can configure an existing installer at launch. The tag-only release workflow passes the GitHub repository variables with these exact names to the native build and validates them before packaging; unset or invalid values fail the release job. Both values are public build configuration, never administrator credentials. Obtain the operator's chosen public recipient label before setting that variable. Setting repository variables does not itself build, publish or release the app.
+
 For the actual local admin proxy, set only the public service origin, then enter the dedicated credential interactively:
 
 ```sh

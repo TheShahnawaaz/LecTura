@@ -21,6 +21,9 @@ jobs:
             args: ''
 
     runs-on: ${{ matrix.platform }}
+    env:
+      LECTURA_SYNC_ORIGIN: ${{ vars.LECTURA_SYNC_ORIGIN }}
+      LECTURA_SYNC_RECIPIENT: ${{ vars.LECTURA_SYNC_RECIPIENT }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,7 +31,26 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+
+      - name: Validate public study sync configuration
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          const raw = process.env.LECTURA_SYNC_ORIGIN || '';
+          const recipient = process.env.LECTURA_SYNC_RECIPIENT || '';
+          let valid = false;
+          try {
+            const url = new URL(raw);
+            valid = url.protocol === 'https:' && !!url.hostname &&
+              !url.username && !url.password && url.pathname === '/' &&
+              !url.search && !url.hash && !!recipient.trim();
+          } catch {}
+          if (!valid) {
+            console.error('Set repository variables LECTURA_SYNC_ORIGIN (HTTPS origin only) and LECTURA_SYNC_RECIPIENT (approved public name/contact) before releasing.');
+            process.exit(1);
+          }
+          NODE
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
