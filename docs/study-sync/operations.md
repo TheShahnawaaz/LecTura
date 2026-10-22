@@ -21,6 +21,12 @@ The helper's `create` and `configure` actions are explicit provisioning operatio
 
 The public build recipient label is **LecTura administrator**, as selected by the operator without personal contact details. Public build variables do not update existing installers. Registration must stay closed until the remaining rollout gates below are resolved.
 
+## Stable installer publication
+
+The release workflow builds Apple Silicon Mac, Intel Mac and Windows installers from a stable `vMAJOR.MINOR.PATCH` tag. It now creates a **draft** GitHub release. After every platform build succeeds, the updater job requires all three updater archives and verifies their Minisign signatures against the existing public key in `src-tauri/tauri.conf.json`. Only then does it upload `latest.json` to that draft. Windows retains the MSI updater format used by the previous stable feed.
+
+Publishing the fully verified draft as the latest stable release is a separate authorized operator action. It makes the configured `releases/latest/download/latest.json` endpoint offer the new version to existing installations. Keep the current signing key; changing it would break verification in installed apps. The update prompt and release notes disclose default-enabled sharing and the pause control. Updating the app does not approve its installation or open registration.
+
 Real rollout requires separate authorization. Resolve recipient identity/contact, expected users/hours, appropriate requirements if minors are involved, privacy wording and retention review first. Learner ages remain unknown until established appropriately.
 
 ## Configuration and access

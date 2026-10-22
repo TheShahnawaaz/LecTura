@@ -59,7 +59,7 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Download yt-dlp sidecar binaries
         shell: bash
@@ -104,8 +104,13 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'LecTura ${{ github.ref_name }}'
-          releaseBody: 'See the assets below to download and install this version.'
-          releaseDraft: false
+          releaseBody: |
+            Adds study sharing, enabled by default, with a visible notice and pause control.
+            Only your name, course/video information, focused study time and playback progress are shared with the LecTura administrator.
+            Administrator approval is required before study-data uploads. Notes, screenshots, files and local paths remain on your laptop.
+            Includes offline retry/deduplication, history-preserving course imports and a private administrator dashboard.
+          # Hold the public updater on its previous release until all packages are verified.
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
 
@@ -121,11 +126,18 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+
+      - name: Install Rust for updater signature verification
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the isolated Minisign verifier
+        run: cargo build --locked --release --manifest-path .github/scripts/verify-updater/Cargo.toml --target-dir "$RUNNER_TEMP/lectura-updater-verify"
 
       - name: Generate and upload latest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.ref_name }}
+          LECTURA_UPDATER_VERIFIER: ${{ runner.temp }}/lectura-updater-verify/release/lectura-verify-updater
         run: |
           node .github/scripts/generate-latest-json.cjs
