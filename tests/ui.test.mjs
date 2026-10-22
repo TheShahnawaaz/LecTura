@@ -297,3 +297,131 @@ test("a revoked installation can still pause locally, but cannot resume sharing"
   assert.ok(resume);
   assert.equal(resume.disabled, true);
 });
+
+test("YouTube callbacks retain their course context and ignore callbacks after a course switch", async (t) => {
+  const window = new Window({
+    url: "http://127.0.0.1:1420",
+    settings: { disableIframePageLoading: true },
+  });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.HTMLElement = window.HTMLElement;
+  globalThis.localStorage = window.localStorage;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = await import("react"),
+    { act } = React,
+    { createRoot } = await import("react-dom/client");
+  const records = [],
+    progress = [];
+  window.YT = {
+    PlayerState: { ENDED: 0, PLAYING: 1, PAUSED: 2, CUED: 5, UNSTARTED: -1 },
+    Player: function (_frame, { events }) {
+      const player = {
+        getCurrentTime: () => 15,
+        getDuration: () => 600,
+        setPlaybackRate() {},
+        seekTo() {},
+        playVideo() {},
+      };
+      records.push({ events, player });
+      return player;
+    },
+  };
+  const dir = await mkdtemp(
+    new URL("./.ui-generated-", import.meta.url).pathname,
+  );
+  const result = await build({
+    entryPoints: [
+      new URL("../src/components/PlayerView.jsx", import.meta.url).pathname,
+    ],
+    outfile: dir + "/player.mjs",
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    write: false,
+    packages: "external",
+    alias: { "@": new URL("../src", import.meta.url).pathname },
+    plugins: [
+      {
+        name: "synthetic-native-boundary",
+        setup(b) {
+          b.onResolve(
+            { filter: /^@tauri-apps\/api\/(tauri|window)$/ },
+            (args) => ({ path: args.path, namespace: "fixture" }),
+          );
+          b.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => ({
+            contents: path.endsWith("/window")
+              ? "export const appWindow={setFullscreen:async()=>{}};"
+              : 'export const invoke=async cmd=>cmd.includes("bookmarks")?[]:null; export const convertFileSrc=path=>path;',
+            loader: "js",
+          }));
+        },
+      },
+    ],
+  });
+  const path = dir + "/player.mjs";
+  await writeFile(
+    path,
+    result.outputFiles.find((f) => f.path.endsWith(".mjs")).text,
+  );
+  const { PlayerView } = await import(path);
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const video = {
+    id: "synthetic_shared_video",
+    playlist_id: "course-A",
+    title: "Synthetic shared video",
+    duration: 600,
+    download_status: "none",
+    is_completed: false,
+    watched_progress: 0,
+  };
+  const render = async (activeVideo) =>
+    act(async () => {
+      root.render(
+        React.createElement(PlayerView, {
+          activeVideo,
+          videos: [activeVideo],
+          videoPlayerRef: { current: null },
+          playbackSpeed: 1,
+          setPlaybackSpeed() {},
+          handleUpdateProgress: (...args) => progress.push(args),
+          handleSelectVideo() {},
+          onStudyTimeLogged() {},
+          seekRequest: null,
+        }),
+      );
+      await settle();
+    });
+  t.after(async () => {
+    await act(() => root.unmount());
+    await window.happyDOM.close();
+    await rm(dir, { recursive: true });
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    delete globalThis.localStorage;
+  });
+  await render(video);
+  const original = records.at(-1);
+  assert.ok(original);
+  await act(async () => {
+    original.events.onStateChange({ data: 0, target: original.player });
+    await settle();
+  });
+  assert.equal(progress.at(-1)[3], "course-A");
+  await render({ ...video, playlist_id: "course-B" });
+  const replacement = records.at(-1);
+  assert.notEqual(replacement, original);
+  const count = progress.length;
+  await act(async () => {
+    original.events.onStateChange({ data: 0, target: original.player });
+    await settle();
+  });
+  assert.equal(progress.length, count);
+  await act(async () => {
+    replacement.events.onStateChange({ data: 0, target: replacement.player });
+    await settle();
+  });
+  assert.equal(progress.at(-1)[0], video.id);
+  assert.equal(progress.at(-1)[3], "course-B");
+});

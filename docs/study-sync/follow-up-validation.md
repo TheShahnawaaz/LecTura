@@ -17,7 +17,7 @@ The initial cross-course rejection was a conservative restriction, not equivalen
 
 ## Checks
 
-- 23 JavaScript/runtime tests pass.
+- 24 JavaScript/runtime tests pass.
 - 11 ordinary native tests pass. The loopback integration is deliberately ignored in the ordinary native test command, then run separately by `npm run test:native:tls`.
 - The ignored integration test passed in both memory-fixture and isolated macOS Keychain modes (`npm run test:native:tls -- --secure-store`). These are two fixture configurations of the same test, not two distinct unit tests.
 - Rust library/binary check, frontend production build, formatting/syntax checks and whitespace checks pass.
@@ -28,3 +28,7 @@ Detailed local output is retained in the updated review archive under `review/va
 ## Remaining rollout gates
 
 A full signed/native WebView plus YouTube/offline-player packaging smoke remains unrun: this checkout lacks its platform yt-dlp sidecar, and the tests intentionally neither touch the user's application database nor configure a real service. macOS x64/Windows packaging, recipient/reporting-zone confirmation, applicable requirements for minors (ages remain unknown), account-specific Free-plan quota/CPU/storage measurements, real provisioning/deployment and a production backup/restore rehearsal remain separate rollout work. No existing application credential, production enrollment/upload, real account, merge, deployment or release was created during these checks.
+
+## Merge-readiness regression check
+
+A final source review found that a delayed YouTube player callback could resolve playback progress using the App's different current course after a course switch. Progress callbacks now carry the emitting course ID explicitly, and disposed player callbacks/API-ready completions are ignored. A mounted real PlayerView regression fixture switches a shared video from course A to B, confirms each current completion reports the correct course and confirms the disposed A callback cannot write after the switch. Iframe loading and native IPC are replaced only in the synthetic test. The full 24-test JavaScript/runtime suite, production frontend build and formatting checks pass after this fix. Native code/protocol are unchanged by this final frontend fix; their 11 ordinary tests and both native HTTPS fixture modes remain covered, and PR CI reruns against the new head.

@@ -362,7 +362,7 @@ export function PlayerView({
     if (!currentVid) return;
 
     // 1. Mark current video as completed
-    handleUpdateProgress(currentVid.id, currentVid.duration || 0, true);
+    handleUpdateProgress(currentVid.id, currentVid.duration || 0, true, currentVid.playlist_id);
 
     // 2. Autoplay the next video if enabled and it exists
     if (autoplayEnabledRef.current && nextVideoRef.current) {
@@ -524,12 +524,14 @@ export function PlayerView({
   // Initialize/Destroy YT Player instance on the active iframe
   useEffect(() => {
     let player;
+    let disposed = false;
     
     const initPlayer = () => {
-      if (window.YT && window.YT.Player && iframeRef.current) {
+      if (!disposed && window.YT && window.YT.Player && iframeRef.current) {
         player = new window.YT.Player(iframeRef.current, {
           events: {
             onReady: (event) => {
+              if (disposed) return;
               ytPlayerRef.current = event.target;
               // Apply the initial/saved playback speed from ref
               if (typeof event.target.setPlaybackRate === "function") {
@@ -547,6 +549,7 @@ export function PlayerView({
               }
             },
             onStateChange: (event) => {
+              if (disposed) return;
               const yt = event.target;
               if (event.data === window.YT.PlayerState.ENDED) {
                 setWatching(false);
@@ -556,12 +559,12 @@ export function PlayerView({
                 setWatching(true);
                 clearYtProgressInterval();
                 ytProgressIntervalRef.current = setInterval(() => {
-                  if (typeof yt.getCurrentTime === "function" && typeof yt.getDuration === "function") {
+                  if (!disposed && typeof yt.getCurrentTime === "function" && typeof yt.getDuration === "function") {
                     const curTime = yt.getCurrentTime();
                     const duration = yt.getDuration();
                     const isDone = curTime >= duration - 10;
                     if (Math.round(curTime) % 5 === 0) {
-                      handleUpdateProgress(activeVideoRef.current.id, Math.round(curTime), isDone);
+                      handleUpdateProgress(activeVideo.id, Math.round(curTime), isDone, activeVideo.playlist_id);
                     }
                   }
                 }, 1000);
@@ -589,6 +592,7 @@ export function PlayerView({
     }
 
     return () => {
+      disposed = true;
       // Note: We do NOT call player.destroy() here because the YouTube API's destroy() method
       // physically deletes the <iframe> element from the DOM, breaking React's virtual DOM reconciliation.
       // The browser naturally cleans up the iframe context on unmount.
@@ -979,7 +983,7 @@ export function PlayerView({
             const isDone =
               curTime >= e.currentTarget.duration - 10;
             if (Math.round(curTime) % 5 === 0) {
-              handleUpdateProgress(activeVideo.id, Math.round(curTime), isDone);
+              handleUpdateProgress(activeVideo.id, Math.round(curTime), isDone, activeVideo.playlist_id);
             }
           }}
           onEnded={() => {
@@ -1109,7 +1113,8 @@ export function PlayerView({
                 handleUpdateProgress(
                   activeVideo.id,
                   activeVideo.is_completed ? 0 : activeVideo.duration,
-                  !activeVideo.is_completed
+                  !activeVideo.is_completed,
+                  activeVideo.playlist_id
                 );
               }}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-all duration-150 h-[34px] ${

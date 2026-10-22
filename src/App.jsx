@@ -874,11 +874,11 @@ function App() {
     }
   };
 
-  const handleUpdateProgress = async (videoId, seconds, isCompleted) => {
+  const handleUpdateProgress = async (videoId, seconds, isCompleted, courseId) => {
     try {
       await invoke("update_video_progress", {
         videoId,
-        courseId: videos.find(v => v.id === videoId)?.playlist_id || activeVideo?.playlist_id,
+        courseId,
         seconds,
         isCompleted,
       });
