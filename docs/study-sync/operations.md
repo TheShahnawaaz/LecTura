@@ -1,10 +1,31 @@
-# Operator runbook (future provisioning, not executed)
+# Operator runbook
+
+## Approved closed setup (2026-10-22)
+
+The Free Worker is deployed at `https://lectura-study-sync.lectura-private-study-worker.workers.dev`. D1 `lectura-study-sync` has migration `0001_sync.sql` applied; its public database ID is in `cloud/worker/wrangler.toml`. Registration remains closed, with no learner installations or study records. The two rate-limit bindings use dedicated random public namespace identifiers. No paid plan, custom domain, merge, installer release or real learner upload was performed.
+
+The independent application-admin credential is stored in this Mac's encrypted, non-synchronizing Keychain under service `com.lectura.study-sync.admin`, account `lectura-study-sync`. Only its SHA-256 hash is configured as the Worker secret `ADMIN_TOKEN_HASH`. Wrangler's separate OAuth credential is also encrypted with a Keychain-held key. Neither credential belongs in Git or learner configuration.
+
+From the repository root on this Mac, using Node 22 and the installed Apple compiler tools:
+
+```sh
+export PATH=/opt/homebrew/bin:$PATH
+export LECTURA_ADMIN_ORIGIN=https://lectura-study-sync.lectura-private-study-worker.workers.dev
+npm run admin:macos -- check
+npm run admin:macos
+```
+
+Open **http://127.0.0.1:4179/**. The launcher compiles an ignored local Security.framework helper, reads the Keychain credential directly into memory and passes it through an anonymous child-process pipe. The browser never receives it. Close the terminal process when finished. macOS may require the user to approve access to the dedicated Keychain entry. `check` deliberately expects a pristine closed setup; after real enrollment it will fail its empty-data assertions.
+
+The helper's `create` and `configure` actions are explicit provisioning operations, not normal startup steps. `create` refuses to overwrite an existing or unreadable entry. `configure` sends only the stored credential's hash to Wrangler over stdin; it requires separately authorized Cloudflare access with `CLOUDFLARE_AUTH_USE_KEYRING=true` and the intended account selected. Do not rerun either as a recovery shortcut. Rotation needs an explicitly reviewed replacement procedure.
+
+The public build recipient label is **LecTura administrator**, as selected by the operator without personal contact details. Public build variables do not update existing installers. Registration must stay closed until the remaining rollout gates below are resolved.
 
 Real rollout requires separate authorization. Resolve recipient identity/contact, expected users/hours, appropriate requirements if minors are involved, privacy wording and retention review first. Learner ages remain unknown until established appropriately.
 
 ## Configuration and access
 
-Keep Workers/D1 on Free. `cloud/worker/wrangler.toml` contains a deliberately unusable database placeholder, not a production account or database identifier. Its rate-limit namespace numbers are public examples; confirm uniqueness within the intended account before use. Rate limiting is approximate per Cloudflare location; the atomic D1 registration/event budgets are separate global controls. Enrollment/auth fail closed if rate-limit bindings are absent.
+Keep Workers/D1 on Free. `cloud/worker/wrangler.toml` now identifies the approved database and dedicated rate-limit namespaces; copying it into another account requires selecting that account's database and unused namespace identifiers. Rate limiting is approximate per Cloudflare location; the atomic D1 registration/event budgets are separate global controls. Enrollment/auth fail closed if rate-limit bindings are absent.
 
 The operator must provision an independent high-entropy application-admin bearer credential and store only its SHA-256 hash in the Worker's `ADMIN_TOKEN_HASH` secret. This is not a Cloudflare account API key. Do not put a raw admin credential in `.env`, shell history, a URL, frontend storage or the learner build. Rotate by replacing the server hash and restarting the local proxy with the new credential; all old admin access then fails. Never log request bodies or Authorization. Worker observability is disabled in the example configuration to avoid default body/credential logging; separately review platform logging and provider data processing.
 

@@ -67,4 +67,5 @@ Desktop.ini
 # Local Cloudflare runtime and synthetic test artifacts
 .wrangler/
 .dev.vars*
+admin-local/.macos-bin/
 tests/.ui-generated-*/

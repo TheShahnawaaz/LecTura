@@ -34,6 +34,8 @@ jobs:
       - run: npm --prefix tests ci --ignore-scripts
       - run: npm --prefix cloud/worker ci --ignore-scripts
       - run: npm run check:sync
+      - name: Compile macOS Keychain admin helper without accessing credentials
+        run: swiftc admin-local/macos-keychain.swift -o "$RUNNER_TEMP/lectura-keychain-helper"
       - run: npm run test:native
       - name: Synthetic native TLS and D1 integration
         run: npm run test:native:tls
